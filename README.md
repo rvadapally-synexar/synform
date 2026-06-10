@@ -46,6 +46,37 @@ Without keys, everything else works — including **Layer-1 extraction** (determ
 no LLM): try the *Agent/transcript simulator* on the form page with
 `"BP one twenty over eighty, weight 82 kilos, ASA three"`.
 
+## Test on an iPad (LAN, no Mac needed)
+
+```powershell
+# on the Windows dev box — one-time, elevated PowerShell:
+New-NetFirewallRule -DisplayName "SynForm POC dev (4200,5266)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4200,5266 -Profile Private,Domain
+
+cd server/SynForm.Api ; dotnet run          # API binds 0.0.0.0:5266
+cd client ; npx ng serve --host 0.0.0.0     # app binds 0.0.0.0:4200
+```
+
+Then on the iPad (same Wi-Fi): open **http://&lt;pc-ip&gt;:4200** in Safari.
+The client auto-targets the API on the same host (`http://<hostname>:5266`).
+Tip: Share → *Add to Home Screen* gives a chrome-less, app-like full screen.
+Caveat: iPad Safari only allows microphone access on secure origins, so the live
+voice panel needs HTTPS (e.g. an ngrok/Cloudflare tunnel) — the transcript
+simulator and everything else works over plain HTTP.
+
+## Run on a Mac
+
+```bash
+git clone https://github.com/rvadapally-synexar/synform.git && cd synform
+# needs: .NET 8 SDK, Node 20+, PostgreSQL (any port — edit ConnectionStrings in
+# server/SynForm.Api/appsettings.json), then create the role/db from the snippet above.
+(cd server/SynForm.Api && dotnet run) &
+(cd client && npm install && npx ng serve)
+# Capacitor shell (the part that needs Xcode):
+#   cd client && npm i @capacitor/core @capacitor/cli @capacitor/ios
+#   npx ng build demo && npx cap init synform com.synexar.synform --web-dir dist/demo/browser
+#   npx cap add ios && npx cap open ios   → add NSMicrophoneUsageDescription to Info.plist, run on iPad
+```
+
 ## Pages
 
 - `/` — Pre-Anesthesia Assessment host page (slot-group composition, voice panel, simulator)

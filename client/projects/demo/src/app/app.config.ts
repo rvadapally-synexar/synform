@@ -10,6 +10,7 @@ export const appConfig: ApplicationConfig = {
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes),
     provideHttpClient(),
-    { provide: SYN_FORM_API_BASE, useValue: 'http://localhost:5266' },
+    // Same-host API: works on localhost and when served over the LAN (iPad hitting http://<pc-ip>:4200).
+    { provide: SYN_FORM_API_BASE, useValue: `http://${location.hostname}:5266` },
   ],
 };

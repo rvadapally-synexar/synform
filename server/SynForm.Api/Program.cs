@@ -19,9 +19,9 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
 });
 
+// Dev POC: any origin (the app is served over the LAN for iPad testing; no credentials in use).
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.WithOrigins("http://localhost:4200", "capacitor://localhost", "http://localhost")
-     .AllowAnyHeader().AllowAnyMethod()));
+    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
 app.UseCors();
@@ -37,4 +37,4 @@ app.MapExtractEndpoints();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
-app.Run("http://localhost:5266");
+app.Run("http://0.0.0.0:5266");   // bind all interfaces so LAN devices (iPad) can reach the API
