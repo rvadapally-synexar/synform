@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.angular/
+bin/
+obj/
+*.user
+.vs/
+.DS_Store
+appsettings.*.local.json

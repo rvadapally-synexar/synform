@@ -1,0 +1,11 @@
+/* Global app styles */
+@import '@angular/cdk/overlay-prebuilt.css';
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  color: #111827;
+  background: #f8fafc;
+  -webkit-font-smoothing: antialiased;
+}
