@@ -25,27 +25,50 @@ import { SynFormComponent } from './syn-form.component';
   template: `
     <ng-template #panel>
       <div class="voice-panel" [class.listening]="listening()">
-        <button type="button" class="mic" (click)="toggle()"
-                [attr.aria-label]="listening() ? 'Stop dictation' : 'Start dictation'">
-          {{ listening() ? '◼' : '🎤' }}
-        </button>
-        <div class="status">
-          @if (error()) { <span class="err">{{ error() }}</span> }
-          @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
-          @else if (transcript()) { <span class="transcript">{{ transcript() }}</span> }
-          @else if (listening()) { {{ engine() === 'deepgram' ? 'Listening…' : 'Recording — tap ◼ when done' }} }
-          @else if (summary()) { <span class="summary">{{ summary() }}</span> }
-          @else { Tap the mic and dictate }
+        <div class="main-row">
+          <button type="button" class="mic" (click)="toggle()"
+                  [attr.aria-label]="listening() ? 'Stop dictation' : 'Start dictation'">
+            {{ listening() ? '◼' : '🎤' }}
+          </button>
+          <div class="status">
+            @if (error()) { <span class="err">{{ error() }}</span> }
+            @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
+            @else if (transcript()) { <span class="transcript">{{ transcript() }}</span> }
+            @else if (listening()) { {{ engine() === 'deepgram' ? 'Listening…' : 'Recording — tap ◼ when done' }} }
+            @else if (summary()) { <span class="summary">{{ summary() }}</span> }
+            @else { Tap the mic and dictate }
+          </div>
         </div>
+        <!-- What did I just say? The transcript log keeps every utterance visible. -->
+        @if (log().length) {
+          <div class="log" role="log" aria-label="Transcript">
+            @for (entry of log(); track $index) {
+              <div class="log-entry">“{{ entry }}”</div>
+            }
+            <button type="button" class="log-clear" (click)="log.set([])" aria-label="Clear transcript">clear</button>
+          </div>
+        }
       </div>
     </ng-template>
   `,
   styles: [`
     .voice-panel {
-      display: flex; align-items: center; gap: 12px;
-      background: #1f2937; color: #f9fafb; border-radius: 28px;
+      display: flex; flex-direction: column; gap: 8px;
+      background: #1f2937; color: #f9fafb; border-radius: 24px;
       padding: 8px 20px 8px 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .35);
       max-width: min(520px, 92vw); font-size: 14px;
+    }
+    .main-row { display: flex; align-items: center; gap: 12px; }
+    .log {
+      position: relative; margin: 0 4px 6px 12px; padding: 8px 10px;
+      background: rgb(255 255 255 / .07); border-radius: 12px;
+      max-height: 140px; overflow-y: auto; font-size: 13px; line-height: 1.45;
+    }
+    .log-entry { color: #e5e7eb; padding: 2px 0; }
+    .log-entry + .log-entry { border-top: 1px dashed rgb(255 255 255 / .12); margin-top: 4px; padding-top: 6px; }
+    .log-clear {
+      position: sticky; bottom: 0; float: right; border: none; background: transparent;
+      color: #9ca3af; font-size: 11.5px; cursor: pointer; text-decoration: underline; padding: 2px 0 0;
     }
     .mic {
       width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
@@ -77,6 +100,8 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   summary = signal('');
   error = signal('');
   engine = signal<'whisper' | 'vibevoice' | 'deepgram' | 'none'>('none');
+  /** Every transcribed utterance, newest last — the user sees exactly what the ASR heard. */
+  log = signal<string[]>([]);
   /** Batch engines record until tap-stop, then transcribe; deepgram streams live. */
   private isBatch = () => this.engine() === 'vibevoice' || this.engine() === 'whisper';
 
@@ -152,6 +177,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
 
   private async handleUtterance(text: string): Promise<void> {
     this.processing.set(true);
+    this.log.update(entries => [...entries, text]);
     try {
       const extraction = await this.data.extract({
         layoutKey: this.layoutKey(),
