@@ -211,10 +211,18 @@ public sealed class Layer1Resolver
                 }
                 // Free text: only short, field-targeted remainders ("patient name John Smith").
                 // Long remainders are narrative — leave them for Layer 2's language understanding.
-                if (CountWords(remainder) > 6) return false;
-                // Normalization lowercased the segment; title-case it back (names, mostly).
-                var titled = Regex.Replace(remainder.Trim(), @"\b[a-z]", m => m.Value.ToUpperInvariant());
-                Set(titled, 0.9);
+                // Strip connective filler left over after phrase removal: "The name is Andrew Tate"
+                // minus the "name" trigger leaves "the is andrew tate" → "andrew tate".
+                var cleaned = Regex.Replace(remainder.Trim(),
+                    @"^(?:(?:the|a|an|is|was|are|of|for|her|his|their|patient)\s+)+", "", RegexOptions.IgnoreCase).Trim();
+                if (cleaned == "" || CountWords(cleaned) > 6) return false;
+                // Normalization lowercased the segment. Short all-alphabetic values are almost
+                // always names → Title Case; anything else (notes fragments) → sentence case.
+                var isNameLike = CountWords(cleaned) <= 4 && Regex.IsMatch(cleaned, @"^[a-z ]+$");
+                var cased = isNameLike
+                    ? Regex.Replace(cleaned, @"\b[a-z]", m => m.Value.ToUpperInvariant())
+                    : char.ToUpperInvariant(cleaned[0]) + cleaned[1..];
+                Set(cased, 0.9);
                 return true;
             }
         }

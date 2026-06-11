@@ -18,7 +18,7 @@ public sealed class WhisperSttService(
         !string.IsNullOrWhiteSpace(config["Transcription:Whisper:Endpoint"]) &&
         !string.IsNullOrWhiteSpace(config["Transcription:Whisper:ApiKey"]);
 
-    public async Task<string> TranscribeAsync(byte[] audio, string format, CancellationToken ct)
+    public async Task<string> TranscribeAsync(byte[] audio, string format, string[] hotwords, CancellationToken ct)
     {
         var endpoint = config["Transcription:Whisper:Endpoint"]?.TrimEnd('/');
         var apiKey = config["Transcription:Whisper:ApiKey"];
@@ -44,6 +44,11 @@ public sealed class WhisperSttService(
         content.Add(audioContent, "file", $"audio.{format}");
         content.Add(new StringContent("json"), "response_format");
         content.Add(new StringContent("en"), "language");
+        // Vocabulary biasing: Whisper's prompt primes recognition toward the form's clinical
+        // terms ("Mallampati" instead of "Malayam Party"). Keep under the ~224-token limit.
+        if (hotwords.Length > 0)
+            content.Add(new StringContent("Clinical pre-anesthesia dictation. Terms: " +
+                string.Join(", ", hotwords.Take(60))), "prompt");
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         request.Headers.Add("api-key", apiKey);

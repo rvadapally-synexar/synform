@@ -77,20 +77,21 @@ public static class ExtractEndpoints
             await file.CopyToAsync(ms, ct);
             var format = file.ContentType.Split('/').Last().Split(';').First(); // audio/webm;codecs=opus → webm
 
+            // Hotword-bias the ASR with the form's own clinical vocabulary (both engines).
+            var layoutKey = request.Form["layoutKey"].FirstOrDefault();
+            var hotwords = layoutKey != null && layouts.LatestPublished(layoutKey) is { } row
+                ? VibeVoiceSttService.HotwordsFor(row.Parse())
+                : [];
+
             try
             {
                 string text;
                 switch (engine)
                 {
                     case "whisper" when whisper.IsConfigured:
-                        text = await whisper.TranscribeAsync(ms.ToArray(), format, ct);
+                        text = await whisper.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
                         break;
                     case "vibevoice" when vibeVoice.IsConfigured:
-                        // Hotword-bias the ASR with the form's own clinical vocabulary.
-                        var layoutKey = request.Form["layoutKey"].FirstOrDefault();
-                        var hotwords = layoutKey != null && layouts.LatestPublished(layoutKey) is { } row
-                            ? VibeVoiceSttService.HotwordsFor(row.Parse())
-                            : [];
                         text = await vibeVoice.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
                         break;
                     default:
