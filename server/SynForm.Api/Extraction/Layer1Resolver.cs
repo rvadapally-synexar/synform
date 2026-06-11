@@ -169,6 +169,10 @@ public sealed class Layer1Resolver
                 var hour = int.Parse(m.Groups[1].Value);
                 var minute = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0;
                 var meridiem = m.Groups[3].Value.Replace(".", "").ToLowerInvariant();
+                // Spoken-language PM inference: "eleven last night" / "seven in the evening".
+                // Getting NPO time wrong by 12 hours is a clinical error, not a nit.
+                if (meridiem == "" && Regex.IsMatch(remainder, @"\b(night|tonight|evening|afternoon)\b", RegexOptions.IgnoreCase))
+                    meridiem = "pm";
                 if (meridiem == "pm" && hour < 12) hour += 12;
                 if (meridiem == "am" && hour == 12) hour = 0;
                 if (hour > 23 || minute > 59) return false;

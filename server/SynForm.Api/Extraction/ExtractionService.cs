@@ -68,8 +68,18 @@ public sealed class ExtractionService(
                 var provider = ResolveProvider(forceVision: false);
                 var llm = await provider.ExtractAsync(layout, Schema(layoutKey, layoutVersion, layout, lookups), input, ct);
                 foreach (var (k, v) in llm.Values)
-                    if (!values.ContainsKey(k)) // Layer 1 matches (0.95) win over LLM guesses
+                {
+                    if (!values.TryGetValue(k, out var existing))
                     { values[k] = v; confidences[k] = llm.Confidences.GetValueOrDefault(k, 0.7); }
+                    // Scalars: Layer 1 (0.95) wins. Arrays: union — Layer 1 often catches only the
+                    // first item of an "X and Y" list, while the LLM sees the full phrase.
+                    else if (existing.ValueKind == JsonValueKind.Array && v.ValueKind == JsonValueKind.Array)
+                    {
+                        var merged = existing.EnumerateArray().Concat(v.EnumerateArray())
+                            .Select(e => e.Clone()).DistinctBy(e => e.GetRawText()).ToList();
+                        values[k] = JsonSerializer.SerializeToElement(merged);
+                    }
+                }
                 layer = l1.Values.Count > 0 ? "layer1+layer2" : "layer2";
             }
         }
