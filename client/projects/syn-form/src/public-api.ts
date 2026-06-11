@@ -4,6 +4,7 @@
 export * from './lib/types';
 export * from './lib/condition';
 export * from './lib/computed';
+export { uuid } from './lib/uuid';
 export { SYN_FORM_API_BASE, SynFormDataService } from './lib/data.service';
 export { PointerModeService } from './lib/pointer';
 export { SynFormComponent } from './lib/syn-form.component';

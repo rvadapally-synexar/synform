@@ -11,6 +11,7 @@ import { SynFormDataService } from './data.service';
 import { SynFieldComponent } from './field.component';
 import { SynFormGroupDirective } from './group.directive';
 import { PointerModeService } from './pointer';
+import { uuid } from './uuid';
 import {
   FieldDef, FieldHighlight, FormRecord, LayoutDef, OptionItem, PartialValues,
   PopulateResult, PopulateSource, ProvenanceEntry, SaveResult,
@@ -108,7 +109,7 @@ export class SynFormComponent implements AfterContentInit {
   private valueSub?: Subscription;
   private provenance: Record<string, ProvenanceEntry> = {};
   private populating = false;
-  private recordId: string = crypto.randomUUID();
+  private recordId: string = uuid();
   private contentReady = false;
 
   constructor() {
@@ -474,7 +475,7 @@ export class SynFormComponent implements AfterContentInit {
   reset(): void {
     this.formGroup.reset();
     this.provenance = {};
-    this.recordId = crypto.randomUUID();
+    this.recordId = uuid();
     this.highlights.set({});
     this.clientErrors.set({});
     this.serverErrors.set({});
