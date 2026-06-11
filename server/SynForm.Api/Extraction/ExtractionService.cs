@@ -102,12 +102,18 @@ public sealed class ExtractionService(
 
     private IExtractionProvider ResolveProvider(bool forceVision)
     {
-        var name = forceVision ? "openai" : config["Extraction:Provider"] ?? "ollama";
-        return name switch
+        var name = config["Extraction:Provider"] ?? "ollama";
+        IExtractionProvider provider = name switch
         {
+            "anthropic" => services.GetRequiredService<AnthropicProvider>(),
             "openai" => services.GetRequiredService<OpenAiProvider>(),
             _ => services.GetRequiredService<OllamaProvider>(),
         };
+        if (!forceVision || provider.SupportsVision) return provider;
+        // Configured provider can't do images (Ollama): fall back to a vision-capable one.
+        return !string.IsNullOrEmpty(config["Extraction:Anthropic:ApiKey"] ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"))
+            ? services.GetRequiredService<AnthropicProvider>()
+            : services.GetRequiredService<OpenAiProvider>();
     }
 
     private static System.Text.Json.Nodes.JsonObject Schema(

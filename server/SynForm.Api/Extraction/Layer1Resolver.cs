@@ -205,7 +205,10 @@ public sealed class Layer1Resolver
                     Set(matched[0].Value, matched[0].Score >= 1.0 ? 0.95 : 0.9);
                     return true;
                 }
-                Set(remainder.Trim(), 0.9); // free text: take the remainder verbatim
+                // Free text: only short, field-targeted remainders ("patient name John Smith").
+                // Long remainders are narrative — leave them for Layer 2's language understanding.
+                if (CountWords(remainder) > 6) return false;
+                Set(remainder.Trim(), 0.9);
                 return true;
             }
         }
