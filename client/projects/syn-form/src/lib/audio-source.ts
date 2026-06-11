@@ -44,7 +44,8 @@ export class WebAudioSource implements AudioSource {
           this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
           const params = new URLSearchParams({
-            model: 'nova-2', interim_results: 'true', endpointing: '300',
+            model: 'nova-3-medical', // clinical vocabulary model (spec §2 allowed nova-2 or nova-3-medical)
+            interim_results: 'true', endpointing: '300',
             smart_format: 'true', punctuate: 'true',
           });
           this.ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params}`, ['bearer', token]);
