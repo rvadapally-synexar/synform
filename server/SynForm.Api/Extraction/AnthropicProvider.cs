@@ -56,8 +56,13 @@ public sealed class AnthropicProvider(IHttpClientFactory http, IConfiguration co
                 new JsonObject { ["role"] = "user", ["content"] = userContent }),
         };
 
+        // Configurable for BAA routing: production points at the Azure AI Foundry Anthropic
+        // endpoint (Microsoft BAA umbrella, per the 2026-06-01 compliance memo) instead of
+        // api.anthropic.com, which needs a direct Anthropic BAA.
+        var baseUrl = (config["Extraction:Anthropic:BaseUrl"] ?? "https://api.anthropic.com").TrimEnd('/');
+
         var client = http.CreateClient("anthropic");
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/messages")
         {
             Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
         };

@@ -6,7 +6,7 @@ import {
   ViewContainerRef, inject, input, signal, viewChild,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AudioSource, WebAudioSource } from './audio-source';
+import { AudioSource, VibeVoiceAudioSource, WebAudioSource } from './audio-source';
 import { SynFormDataService } from './data.service';
 import { PointerModeService } from './pointer';
 import { SynFormComponent } from './syn-form.component';
@@ -31,9 +31,9 @@ import { SynFormComponent } from './syn-form.component';
         </button>
         <div class="status">
           @if (error()) { <span class="err">{{ error() }}</span> }
-          @else if (processing()) { <span class="spin" aria-hidden="true"></span> Processing… }
+          @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
           @else if (transcript()) { <span class="transcript">{{ transcript() }}</span> }
-          @else if (listening()) { Listening… }
+          @else if (listening()) { {{ engine() === 'vibevoice' ? 'Recording — tap ◼ when done' : 'Listening…' }} }
           @else if (summary()) { <span class="summary">{{ summary() }}</span> }
           @else { Tap the mic and dictate }
         </div>
@@ -76,6 +76,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   transcript = signal('');
   summary = signal('');
   error = signal('');
+  engine = signal<'vibevoice' | 'deepgram' | 'none'>('none');
 
   private data = inject(SynFormDataService);
   private pointer = inject(PointerModeService);
@@ -84,19 +85,29 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   private panelTpl = viewChild.required<TemplateRef<unknown>>('panel');
 
   private overlayRef?: OverlayRef;
-  private source: AudioSource = new WebAudioSource(async () => (await this.data.sttToken()).access_token);
+  private source?: AudioSource;
   private sub?: Subscription;
 
-  ngOnInit(): void {
+  async ngOnInit(): Promise<void> {
     const position = this.pointer.coarse()
       ? this.overlay.position().global().centerHorizontally().bottom('24px') // above home indicator, thumb-reachable
       : this.overlay.position().global().right('24px').bottom('24px');
     this.overlayRef = this.overlay.create({ positionStrategy: position, hasBackdrop: false });
     this.overlayRef.attach(new TemplatePortal(this.panelTpl(), this.vcr));
+    try { this.engine.set((await this.data.sttEngine()).engine); } catch { this.engine.set('none'); }
+  }
+
+  /** Both engines share the AudioSource seam — only the lifecycle differs:
+   * deepgram streams continuously; vibevoice records until stop, then emits once. */
+  private createSource(): AudioSource {
+    return this.engine() === 'vibevoice'
+      ? new VibeVoiceAudioSource(blob => this.data.transcribe(blob, this.layoutKey()))
+      : new WebAudioSource(async () => (await this.data.sttToken()).access_token);
   }
 
   ngOnDestroy(): void {
-    this.stop();
+    this.sub?.unsubscribe();
+    this.source?.stop();
     this.overlayRef?.dispose();
   }
 
@@ -108,21 +119,31 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.error.set('');
     this.summary.set('');
     this.listening.set(true);
+    this.source = this.createSource();
     this.sub = this.source.start().subscribe({
       next: e => {
         this.transcript.set(e.text);
         if (e.utteranceEnd) this.handleUtterance(e.text);
       },
       error: err => {
-        this.error.set(err?.message ?? 'Microphone or transcription unavailable.');
+        this.error.set(err?.error?.detail ?? err?.message ?? 'Microphone or transcription unavailable.');
         this.listening.set(false);
+        this.processing.set(false);
       },
+      complete: () => this.listening.set(false),
     });
   }
 
   private stop(): void {
+    if (this.engine() === 'vibevoice') {
+      // Push-to-talk: stopping ends the recording; keep the subscription alive —
+      // the transcript event arrives AFTER stop, once the backend transcribes the blob.
+      this.processing.set(true);
+      this.source?.stop();
+      return;
+    }
     this.sub?.unsubscribe();
-    this.source.stop();
+    this.source?.stop();
     this.listening.set(false);
     this.transcript.set('');
   }

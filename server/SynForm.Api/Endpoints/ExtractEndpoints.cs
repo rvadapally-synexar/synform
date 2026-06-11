@@ -46,6 +46,53 @@ public static class ExtractEndpoints
             }
         });
 
+        // Which STT engine is configured? The voice panel adapts its UX accordingly:
+        // vibevoice = push-to-talk batch (Azure AI Foundry, our tenancy, Microsoft BAA),
+        // deepgram = streaming with endpointing.
+        app.MapGet("/api/stt/engine", (IConfiguration config, VibeVoiceSttService vibeVoice) =>
+        {
+            var engine = config["Transcription:Engine"];
+            if (string.IsNullOrWhiteSpace(engine))
+                engine = vibeVoice.IsConfigured ? "vibevoice"
+                    : !string.IsNullOrEmpty(config["Deepgram:ApiKey"]) ? "deepgram"
+                    : "none";
+            return Results.Ok(new { engine });
+        });
+
+        // Batch transcription for the push-to-talk path (VibeVoice-ASR on Azure AI Foundry).
+        app.MapPost("/api/stt/transcribe", async (
+            HttpRequest request, VibeVoiceSttService vibeVoice, LayoutRepo layouts,
+            ILoggerFactory lf, CancellationToken ct) =>
+        {
+            if (!request.HasFormContentType || request.Form.Files.Count == 0)
+                return Results.BadRequest(new { error = "Multipart form with an 'audio' file is required." });
+            if (!vibeVoice.IsConfigured)
+                return Results.Problem(statusCode: 503, title: "VibeVoice not configured",
+                    detail: "Set Transcription:VibeVoice:Endpoint and ApiKey in user-secrets.");
+
+            var file = request.Form.Files["audio"] ?? request.Form.Files[0];
+            using var ms = new MemoryStream();
+            await file.CopyToAsync(ms, ct);
+            var format = file.ContentType.Split('/').Last().Split(';').First(); // audio/webm;codecs=opus → webm
+
+            // Hotword-bias the ASR with the form's own clinical vocabulary.
+            var layoutKey = request.Form["layoutKey"].FirstOrDefault();
+            var hotwords = Array.Empty<string>();
+            if (layoutKey != null && layouts.LatestPublished(layoutKey) is { } row)
+                hotwords = VibeVoiceSttService.HotwordsFor(row.Parse());
+
+            try
+            {
+                var text = await vibeVoice.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
+                return Results.Ok(new { text });
+            }
+            catch (HttpRequestException ex)
+            {
+                lf.CreateLogger("Stt").LogWarning(ex, "VibeVoice transcription failed");
+                return Results.Problem(statusCode: 502, title: "Transcription failed", detail: ex.Message);
+            }
+        });
+
         // Deepgram temporary-token proxy: the browser never sees the real API key.
         app.MapPost("/api/stt/token", async (IConfiguration config, IHttpClientFactory http, CancellationToken ct) =>
         {

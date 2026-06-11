@@ -37,10 +37,17 @@ CREATE ROLE synform_user LOGIN PASSWORD 'synform_dev_2026';
 CREATE DATABASE synform_poc OWNER synform_user;
 ```
 
-### Optional service keys (`server/SynForm.Api/appsettings.json`)
-- `Extraction:Provider` — `ollama` (default, needs Ollama running) or `openai`
-- `Extraction:OpenAi:ApiKey` — enables OpenAI text + **photo (gpt-4o vision)** extraction
-- `Deepgram:ApiKey` — enables the live voice panel (mic → streaming STT → extract → populate)
+### Service keys (via `dotnet user-secrets` in `server/SynForm.Api` — never in appsettings)
+- `Extraction:Anthropic:ApiKey` — Claude for Layer-2 text + **photo (vision)** extraction (default provider).
+  `Extraction:Anthropic:BaseUrl` can point at an Azure AI Foundry Anthropic endpoint for
+  Microsoft-BAA routing instead of api.anthropic.com (per the Synexar HIPAA/BAA memo).
+- `Transcription:VibeVoice:Endpoint` + `ApiKey` — **VibeVoice-ASR on Azure AI Foundry**
+  (same engine + config keys as the main Synexar app; runs in our own tenancy under the
+  Microsoft BAA). Voice panel becomes push-to-talk: record → tap → transcribe → populate.
+- `Deepgram:ApiKey` — alternative streaming STT with live endpointing (BAA available at
+  enterprise tier). `Transcription:Engine` forces `vibevoice`/`deepgram`; otherwise
+  auto-detects from configured keys.
+- `Extraction:Provider` can also be `ollama` (local, needs Ollama) or `openai`.
 
 Without keys, everything else works — including **Layer-1 extraction** (deterministic,
 no LLM): try the *Agent/transcript simulator* on the form page with

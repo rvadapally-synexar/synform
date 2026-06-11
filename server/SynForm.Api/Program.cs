@@ -16,6 +16,7 @@ builder.Services.AddSingleton<ExtractionService>();
 builder.Services.AddSingleton<OllamaProvider>();
 builder.Services.AddSingleton<OpenAiProvider>();
 builder.Services.AddSingleton<AnthropicProvider>();
+builder.Services.AddSingleton<VibeVoiceSttService>();
 builder.Services.AddHttpClient();
 
 builder.Services.ConfigureHttpJsonOptions(o =>

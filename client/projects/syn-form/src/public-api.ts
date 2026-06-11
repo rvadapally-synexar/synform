@@ -11,4 +11,4 @@ export { SynFormComponent } from './lib/syn-form.component';
 export { SynFieldComponent } from './lib/field.component';
 export { SynFormGroupDirective } from './lib/group.directive';
 export { SynVoicePanelComponent } from './lib/voice-panel.component';
-export { type AudioSource, type TranscriptEvent, WebAudioSource, NativeAudioSource } from './lib/audio-source';
+export { type AudioSource, type TranscriptEvent, WebAudioSource, VibeVoiceAudioSource, NativeAudioSource } from './lib/audio-source';

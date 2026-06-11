@@ -69,6 +69,52 @@ export class WebAudioSource implements AudioSource {
 }
 
 /**
+ * Push-to-talk batch implementation for VibeVoice-ASR (Azure AI Foundry, own tenancy,
+ * Microsoft BAA — same engine as the main Synexar app). Records with MediaRecorder;
+ * stop() ends the recording, the blob goes to /api/stt/transcribe, and one final
+ * TranscriptEvent is emitted. Same AudioSource seam as the streaming implementation.
+ */
+export class VibeVoiceAudioSource implements AudioSource {
+  private recorder?: MediaRecorder;
+  private stream?: MediaStream;
+  private chunks: Blob[] = [];
+
+  constructor(private transcribe: (audio: Blob) => Promise<string>) {}
+
+  start(): Observable<TranscriptEvent> {
+    return new Observable<TranscriptEvent>(subscriber => {
+      (async () => {
+        try {
+          this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          this.chunks = [];
+          this.recorder = new MediaRecorder(this.stream, { mimeType: 'audio/webm;codecs=opus' });
+          this.recorder.ondataavailable = e => { if (e.data.size > 0) this.chunks.push(e.data); };
+          this.recorder.onstop = async () => {
+            this.stream?.getTracks().forEach(t => t.stop());
+            try {
+              const text = await this.transcribe(new Blob(this.chunks, { type: 'audio/webm' }));
+              if (text) subscriber.next({ text, utteranceEnd: true });
+              subscriber.complete();
+            } catch (e) {
+              subscriber.error(e);
+            }
+          };
+          this.recorder.start(250);
+        } catch (e) {
+          subscriber.error(e);
+        }
+      })();
+      // No teardown that kills the mic here: stop() must run onstop → transcription.
+    });
+  }
+
+  stop(): void {
+    if (this.recorder?.state === 'recording') this.recorder.stop();
+    else this.stream?.getTracks().forEach(t => t.stop());
+  }
+}
+
+/**
  * Native Capacitor implementation — interface only, NOT implemented in the POC (spec §8).
  * Would use a Capacitor plugin bridging AVAudioEngine (16kHz PCM mono) and stream the
  * buffers over the same Deepgram WebSocket with encoding=linear16&sample_rate=16000.
