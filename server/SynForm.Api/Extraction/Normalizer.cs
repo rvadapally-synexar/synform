@@ -79,15 +79,16 @@ public static class Normalizer
             case "string[]":
             {
                 if (value.ValueKind != JsonValueKind.Array) return null;
-                var snapped = new List<string>();
-                foreach (var item in value.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.String) return null;
-                    var s = SnapOption(f, item.GetString()!, lookups);
-                    if (s == null) return null;
-                    snapped.Add(s);
-                }
-                return JsonSerializer.SerializeToElement(snapped.Distinct().ToList());
+                // Snap each item independently; keep what matches. Dropping the whole list because
+                // one phrasing missed ("reflux" vs "GERD") would silently lose valid clinical data.
+                var snapped = value.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String)
+                    .Select(item => SnapOption(f, item.GetString()!, lookups))
+                    .Where(s => s != null)
+                    .Select(s => s!)
+                    .Distinct()
+                    .ToList();
+                return snapped.Count > 0 ? JsonSerializer.SerializeToElement(snapped) : null;
             }
             default: // string
             {
