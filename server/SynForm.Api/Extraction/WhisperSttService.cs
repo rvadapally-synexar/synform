@@ -38,7 +38,48 @@ public sealed class WhisperSttService(
         var client = http.CreateClient("whisper");
         client.Timeout = TimeSpan.FromMinutes(5);
 
-        using var content = new MultipartFormDataContent();
+        // Whisper deployments have low RPM quotas (capacity 1 ≈ 3 req/min) — back-to-back
+        // dictations 429 routinely. Retry transient failures, honoring Retry-After.
+        const int maxAttempts = 4;
+        for (var attempt = 1; ; attempt++)
+        {
+            // Multipart content can't be reused across attempts — build fresh each try.
+            using var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = BuildContent(audio, format, hotwords),
+            };
+            request.Headers.Add("api-key", apiKey);
+
+            var response = await client.SendAsync(request, ct);
+            var payload = await response.Content.ReadAsStringAsync(ct);
+
+            if (response.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(payload);
+                var text = doc.RootElement.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+                logger.LogInformation("Whisper transcription succeeded on attempt {Attempt} — {Chars} chars", attempt, text.Length);
+                return text.Trim();
+            }
+
+            var status = (int)response.StatusCode;
+            var transient = status is 429 or 500 or 502 or 503;
+            if (!transient || attempt >= maxAttempts)
+                throw new HttpRequestException(status == 429
+                    ? "Whisper is rate-limited (Azure deployment quota). Wait a few seconds and tap the mic again."
+                    : $"Whisper API {status}"); // never include payload: transcript = PHI
+
+            var delay = response.Headers.RetryAfter?.Delta
+                ?? TimeSpan.FromSeconds(Math.Pow(2, attempt)); // 2s, 4s, 8s
+            if (delay > TimeSpan.FromSeconds(20)) delay = TimeSpan.FromSeconds(20);
+            logger.LogWarning("Whisper {Status} on attempt {Attempt}/{Max} — retrying in {Delay}s",
+                status, attempt, maxAttempts, delay.TotalSeconds);
+            await Task.Delay(delay, ct);
+        }
+    }
+
+    private static MultipartFormDataContent BuildContent(byte[] audio, string format, string[] hotwords)
+    {
+        var content = new MultipartFormDataContent();
         var audioContent = new ByteArrayContent(audio);
         audioContent.Headers.ContentType = new MediaTypeHeaderValue($"audio/{format}");
         content.Add(audioContent, "file", $"audio.{format}");
@@ -49,18 +90,6 @@ public sealed class WhisperSttService(
         if (hotwords.Length > 0)
             content.Add(new StringContent("Clinical pre-anesthesia dictation. Terms: " +
                 string.Join(", ", hotwords.Take(60))), "prompt");
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
-        request.Headers.Add("api-key", apiKey);
-
-        var response = await client.SendAsync(request, ct);
-        var payload = await response.Content.ReadAsStringAsync(ct);
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"Whisper API {(int)response.StatusCode}"); // never include payload: transcript = PHI
-
-        using var doc = JsonDocument.Parse(payload);
-        var text = doc.RootElement.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-        logger.LogInformation("Whisper transcription succeeded — {Chars} chars", text.Length);
-        return text.Trim();
+        return content;
     }
 }
