@@ -212,7 +212,9 @@ public sealed class Layer1Resolver
                 // Free text: only short, field-targeted remainders ("patient name John Smith").
                 // Long remainders are narrative — leave them for Layer 2's language understanding.
                 if (CountWords(remainder) > 6) return false;
-                Set(remainder.Trim(), 0.9);
+                // Normalization lowercased the segment; title-case it back (names, mostly).
+                var titled = Regex.Replace(remainder.Trim(), @"\b[a-z]", m => m.Value.ToUpperInvariant());
+                Set(titled, 0.9);
                 return true;
             }
         }

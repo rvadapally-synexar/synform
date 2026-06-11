@@ -46,49 +46,62 @@ public static class ExtractEndpoints
             }
         });
 
-        // Which STT engine is configured? The voice panel adapts its UX accordingly:
-        // vibevoice = push-to-talk batch (Azure AI Foundry, our tenancy, Microsoft BAA),
-        // deepgram = streaming with endpointing.
-        app.MapGet("/api/stt/engine", (IConfiguration config, VibeVoiceSttService vibeVoice) =>
+        // Which STT engine is active? The voice panel adapts its UX accordingly.
+        // whisper / vibevoice = push-to-talk batch (both Azure, our tenancy, Microsoft BAA);
+        // deepgram = streaming with endpointing. "batch" engines share /api/stt/transcribe.
+        static string ResolveEngine(IConfiguration config, VibeVoiceSttService vibeVoice, WhisperSttService whisper)
         {
-            var engine = config["Transcription:Engine"];
-            if (string.IsNullOrWhiteSpace(engine))
-                engine = vibeVoice.IsConfigured ? "vibevoice"
-                    : !string.IsNullOrEmpty(config["Deepgram:ApiKey"]) ? "deepgram"
-                    : "none";
-            return Results.Ok(new { engine });
-        });
+            var engine = config["Transcription:Engine"]?.ToLowerInvariant().Trim();
+            if (!string.IsNullOrEmpty(engine)) return engine;
+            if (vibeVoice.IsConfigured) return "vibevoice";
+            if (whisper.IsConfigured) return "whisper";
+            if (!string.IsNullOrEmpty(config["Deepgram:ApiKey"])) return "deepgram";
+            return "none";
+        }
 
-        // Batch transcription for the push-to-talk path (VibeVoice-ASR on Azure AI Foundry).
+        app.MapGet("/api/stt/engine", (IConfiguration config, VibeVoiceSttService vibeVoice, WhisperSttService whisper) =>
+            Results.Ok(new { engine = ResolveEngine(config, vibeVoice, whisper) }));
+
+        // Batch transcription for the push-to-talk path (Whisper or VibeVoice on Azure).
         app.MapPost("/api/stt/transcribe", async (
-            HttpRequest request, VibeVoiceSttService vibeVoice, LayoutRepo layouts,
+            HttpRequest request, IConfiguration config,
+            VibeVoiceSttService vibeVoice, WhisperSttService whisper, LayoutRepo layouts,
             ILoggerFactory lf, CancellationToken ct) =>
         {
             if (!request.HasFormContentType || request.Form.Files.Count == 0)
                 return Results.BadRequest(new { error = "Multipart form with an 'audio' file is required." });
-            if (!vibeVoice.IsConfigured)
-                return Results.Problem(statusCode: 503, title: "VibeVoice not configured",
-                    detail: "Set Transcription:VibeVoice:Endpoint and ApiKey in user-secrets.");
 
+            var engine = ResolveEngine(config, vibeVoice, whisper);
             var file = request.Form.Files["audio"] ?? request.Form.Files[0];
             using var ms = new MemoryStream();
             await file.CopyToAsync(ms, ct);
             var format = file.ContentType.Split('/').Last().Split(';').First(); // audio/webm;codecs=opus → webm
 
-            // Hotword-bias the ASR with the form's own clinical vocabulary.
-            var layoutKey = request.Form["layoutKey"].FirstOrDefault();
-            var hotwords = Array.Empty<string>();
-            if (layoutKey != null && layouts.LatestPublished(layoutKey) is { } row)
-                hotwords = VibeVoiceSttService.HotwordsFor(row.Parse());
-
             try
             {
-                var text = await vibeVoice.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
+                string text;
+                switch (engine)
+                {
+                    case "whisper" when whisper.IsConfigured:
+                        text = await whisper.TranscribeAsync(ms.ToArray(), format, ct);
+                        break;
+                    case "vibevoice" when vibeVoice.IsConfigured:
+                        // Hotword-bias the ASR with the form's own clinical vocabulary.
+                        var layoutKey = request.Form["layoutKey"].FirstOrDefault();
+                        var hotwords = layoutKey != null && layouts.LatestPublished(layoutKey) is { } row
+                            ? VibeVoiceSttService.HotwordsFor(row.Parse())
+                            : [];
+                        text = await vibeVoice.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
+                        break;
+                    default:
+                        return Results.Problem(statusCode: 503, title: "Transcription not configured",
+                            detail: $"Engine '{engine}' is not configured. Set Transcription:Whisper or Transcription:VibeVoice secrets.");
+                }
                 return Results.Ok(new { text });
             }
             catch (HttpRequestException ex)
             {
-                lf.CreateLogger("Stt").LogWarning(ex, "VibeVoice transcription failed");
+                lf.CreateLogger("Stt").LogWarning(ex, "{Engine} transcription failed", engine);
                 return Results.Problem(statusCode: 502, title: "Transcription failed", detail: ex.Message);
             }
         });

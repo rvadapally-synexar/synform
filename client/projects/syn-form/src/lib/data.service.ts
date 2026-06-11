@@ -110,8 +110,8 @@ export class SynFormDataService {
   sttToken(): Promise<{ access_token: string; expires_in: number }> {
     return firstValueFrom(this.http.post<{ access_token: string; expires_in: number }>(`${this.base}/api/stt/token`, {}));
   }
-  sttEngine(): Promise<{ engine: 'vibevoice' | 'deepgram' | 'none' }> {
-    return firstValueFrom(this.http.get<{ engine: 'vibevoice' | 'deepgram' | 'none' }>(`${this.base}/api/stt/engine`));
+  sttEngine(): Promise<{ engine: 'whisper' | 'vibevoice' | 'deepgram' | 'none' }> {
+    return firstValueFrom(this.http.get<{ engine: 'whisper' | 'vibevoice' | 'deepgram' | 'none' }>(`${this.base}/api/stt/engine`));
   }
   transcribe(audio: Blob, layoutKey?: string): Promise<string> {
     const form = new FormData();

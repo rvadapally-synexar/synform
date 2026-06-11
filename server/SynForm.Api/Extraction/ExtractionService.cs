@@ -53,10 +53,16 @@ public sealed class ExtractionService(
             foreach (var (k, v) in l1.Values) { values[k] = v; confidences[k] = l1.Confidences.GetValueOrDefault(k, 0.95); }
             cleared.AddRange(l1.ClearedFields);
 
-            // Routing rule: Layer 1 resolved ≥1 field AND consumed ≥70% of input → skip the LLM.
-            var skipLlm = l1.Values.Count >= 1 && l1.ConsumedRatio >= 0.7;
-            logger.LogInformation("Extract {Key} v{Version}: layer1 resolved {Count} fields, consumed {Ratio:P0} — {Decision}",
-                layoutKey, layoutVersion, l1.Values.Count, l1.ConsumedRatio, skipLlm ? "skipping LLM" : "routing to LLM");
+            // Routing rule: Layer 1 resolved ≥1 field AND consumed ≥70% of input → the LLM
+            // doesn't need the full input. But a non-trivial unresolved remainder still goes
+            // to Layer 2 on its own ("he is here for a colonoscopy at 10.15" carries fields
+            // Layer 1 can't see) — the layered design is cheapest-first, not cheapest-only.
+            var fullCoverage = l1.Values.Count >= 1 && l1.ConsumedRatio >= 0.7;
+            var remainderWords = l1.UnmatchedText.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            var skipLlm = fullCoverage && remainderWords < 4;
+            logger.LogInformation("Extract {Key} v{Version}: layer1 resolved {Count} fields, consumed {Ratio:P0}, remainder {Words} words — {Decision}",
+                layoutKey, layoutVersion, l1.Values.Count, l1.ConsumedRatio, remainderWords,
+                skipLlm ? "skipping LLM" : fullCoverage ? "LLM on remainder only" : "LLM on full input");
 
             if (skipLlm)
             {
@@ -65,8 +71,9 @@ public sealed class ExtractionService(
             }
             else
             {
+                var llmInput = fullCoverage ? input with { Text = l1.UnmatchedText } : input;
                 var provider = ResolveProvider(forceVision: false);
-                var llm = await provider.ExtractAsync(layout, Schema(layoutKey, layoutVersion, layout, lookups), input, ct);
+                var llm = await provider.ExtractAsync(layout, Schema(layoutKey, layoutVersion, layout, lookups), llmInput, ct);
                 foreach (var (k, v) in llm.Values)
                 {
                     if (!values.TryGetValue(k, out var existing))

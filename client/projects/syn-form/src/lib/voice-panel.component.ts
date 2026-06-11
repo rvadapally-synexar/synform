@@ -33,7 +33,7 @@ import { SynFormComponent } from './syn-form.component';
           @if (error()) { <span class="err">{{ error() }}</span> }
           @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
           @else if (transcript()) { <span class="transcript">{{ transcript() }}</span> }
-          @else if (listening()) { {{ engine() === 'vibevoice' ? 'Recording — tap ◼ when done' : 'Listening…' }} }
+          @else if (listening()) { {{ engine() === 'deepgram' ? 'Listening…' : 'Recording — tap ◼ when done' }} }
           @else if (summary()) { <span class="summary">{{ summary() }}</span> }
           @else { Tap the mic and dictate }
         </div>
@@ -76,7 +76,9 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   transcript = signal('');
   summary = signal('');
   error = signal('');
-  engine = signal<'vibevoice' | 'deepgram' | 'none'>('none');
+  engine = signal<'whisper' | 'vibevoice' | 'deepgram' | 'none'>('none');
+  /** Batch engines record until tap-stop, then transcribe; deepgram streams live. */
+  private isBatch = () => this.engine() === 'vibevoice' || this.engine() === 'whisper';
 
   private data = inject(SynFormDataService);
   private pointer = inject(PointerModeService);
@@ -100,7 +102,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   /** Both engines share the AudioSource seam — only the lifecycle differs:
    * deepgram streams continuously; vibevoice records until stop, then emits once. */
   private createSource(): AudioSource {
-    return this.engine() === 'vibevoice'
+    return this.isBatch()
       ? new VibeVoiceAudioSource(blob => this.data.transcribe(blob, this.layoutKey()))
       : new WebAudioSource(async () => (await this.data.sttToken()).access_token);
   }
@@ -135,7 +137,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   }
 
   private stop(): void {
-    if (this.engine() === 'vibevoice') {
+    if (this.isBatch()) {
       // Push-to-talk: stopping ends the recording; keep the subscription alive —
       // the transcript event arrives AFTER stop, once the backend transcribes the blob.
       this.processing.set(true);
