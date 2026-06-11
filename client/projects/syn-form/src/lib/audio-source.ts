@@ -14,6 +14,10 @@ export interface TranscriptEvent {
 export interface AudioSource {
   start(): Observable<TranscriptEvent>;
   stop(): void;
+  /** Discard the current recording without transcribing. */
+  cancel?(): void;
+  /** Live mic stream for waveform visualization — engine-independent, set after start. */
+  readonly mediaStream?: MediaStream;
 }
 
 /** Browser implementation: MediaRecorder (webm/opus) streamed to Deepgram over WebSocket. */
@@ -23,6 +27,14 @@ export class WebAudioSource implements AudioSource {
   private stream?: MediaStream;
 
   constructor(private getToken: () => Promise<string>) {}
+
+  get mediaStream(): MediaStream | undefined {
+    return this.stream;
+  }
+
+  cancel(): void {
+    this.stop();
+  }
 
   start(): Observable<TranscriptEvent> {
     return new Observable<TranscriptEvent>(subscriber => {
@@ -78,8 +90,13 @@ export class VibeVoiceAudioSource implements AudioSource {
   private recorder?: MediaRecorder;
   private stream?: MediaStream;
   private chunks: Blob[] = [];
+  private cancelled = false;
 
   constructor(private transcribe: (audio: Blob) => Promise<string>) {}
+
+  get mediaStream(): MediaStream | undefined {
+    return this.stream;
+  }
 
   start(): Observable<TranscriptEvent> {
     return new Observable<TranscriptEvent>(subscriber => {
@@ -87,10 +104,12 @@ export class VibeVoiceAudioSource implements AudioSource {
         try {
           this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           this.chunks = [];
+          this.cancelled = false;
           this.recorder = new MediaRecorder(this.stream, { mimeType: 'audio/webm;codecs=opus' });
           this.recorder.ondataavailable = e => { if (e.data.size > 0) this.chunks.push(e.data); };
           this.recorder.onstop = async () => {
             this.stream?.getTracks().forEach(t => t.stop());
+            if (this.cancelled) { subscriber.complete(); return; } // ✕ — discard, never transcribe
             try {
               const text = await this.transcribe(new Blob(this.chunks, { type: 'audio/webm' }));
               if (text) subscriber.next({ text, utteranceEnd: true });
@@ -111,6 +130,11 @@ export class VibeVoiceAudioSource implements AudioSource {
   stop(): void {
     if (this.recorder?.state === 'recording') this.recorder.stop();
     else this.stream?.getTracks().forEach(t => t.stop());
+  }
+
+  cancel(): void {
+    this.cancelled = true;
+    this.stop();
   }
 }
 

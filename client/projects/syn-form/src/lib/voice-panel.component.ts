@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Overlay, OverlayModule, OverlayRef } from '@angular/cdk/overlay';
 import { TemplatePortal } from '@angular/cdk/portal';
 import {
-  ChangeDetectionStrategy, Component, OnDestroy, OnInit, TemplateRef,
+  ChangeDetectionStrategy, Component, ElementRef, OnDestroy, OnInit, TemplateRef,
   ViewContainerRef, inject, input, signal, viewChild,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
@@ -26,18 +26,23 @@ import { SynFormComponent } from './syn-form.component';
     <ng-template #panel>
       <div class="voice-panel" [class.listening]="listening()">
         <div class="main-row">
-          <button type="button" class="mic" (click)="toggle()"
-                  [attr.aria-label]="listening() ? 'Stop dictation' : 'Start dictation'">
-            {{ listening() ? '◼' : '🎤' }}
-          </button>
-          <div class="status">
-            @if (error()) { <span class="err">{{ error() }}</span> }
-            @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
-            @else if (transcript()) { <span class="transcript">{{ transcript() }}</span> }
-            @else if (listening()) { {{ engine() === 'deepgram' ? 'Listening…' : 'Recording — tap ◼ when done' }} }
-            @else if (summary()) { <span class="summary">{{ summary() }}</span> }
-            @else { Tap the mic and dictate }
-          </div>
+          @if (!listening()) {
+            <button type="button" class="mic" (click)="toggle()" aria-label="Start dictation">🎤</button>
+            <div class="status">
+              @if (error()) { <span class="err">{{ error() }}</span> }
+              @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
+              @else if (summary()) { <span class="summary">{{ summary() }}</span> }
+              @else { Tap the mic and dictate }
+            </div>
+          } @else {
+            <!-- Recording: live input-level waveform (client-side, engine-independent) + ✕/✓ -->
+            <canvas #wave class="wave" width="260" height="36" aria-hidden="true"></canvas>
+            @if (transcript()) { <span class="live-partial">{{ transcript() }}</span> }
+            <button type="button" class="ctl cancel" (click)="cancelDictation()"
+                    aria-label="Cancel dictation (Esc)" title="Cancel (Esc)">✕</button>
+            <button type="button" class="ctl ok" (click)="toggle()"
+                    aria-label="Finish and transcribe" title="Finish">✓</button>
+          }
         </div>
         <!-- What did I just say? The transcript log keeps every utterance visible. -->
         @if (log().length) {
@@ -58,7 +63,18 @@ import { SynFormComponent } from './syn-form.component';
       padding: 8px 20px 8px 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .35);
       max-width: min(520px, 92vw); font-size: 14px;
     }
-    .main-row { display: flex; align-items: center; gap: 12px; }
+    .main-row { display: flex; align-items: center; gap: 12px; min-height: 48px; }
+    .wave { border-radius: 8px; flex-shrink: 1; min-width: 0; }
+    .live-partial { font-size: 12.5px; color: #d1d5db; font-style: italic; max-width: 140px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctl {
+      width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer;
+      font-size: 17px; flex-shrink: 0; display: grid; place-items: center;
+    }
+    .ctl.cancel { background: rgb(255 255 255 / .12); color: #f3f4f6; }
+    .ctl.cancel:hover { background: rgb(220 38 38 / .55); }
+    .ctl.ok { background: #16a34a; color: #fff; font-weight: 700; }
+    .ctl.ok:hover { background: #15803d; }
     .log {
       position: relative; margin: 0 4px 6px 12px; padding: 8px 10px;
       background: rgb(255 255 255 / .07); border-radius: 12px;
@@ -115,6 +131,12 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   private source?: AudioSource;
   private sub?: Subscription;
 
+  private waveCanvas = viewChild<ElementRef<HTMLCanvasElement>>('wave');
+  private audioCtx?: AudioContext;
+  private rafId = 0;
+  private levels: number[] = [];
+  private escListener = (e: KeyboardEvent) => { if (e.key === 'Escape' && this.listening()) this.cancelDictation(); };
+
   async ngOnInit(): Promise<void> {
     const position = this.pointer.coarse()
       ? this.overlay.position().global().centerHorizontally().bottom('24px') // above home indicator, thumb-reachable
@@ -133,6 +155,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.stopWaveform();
     this.sub?.unsubscribe();
     this.source?.stop();
     this.overlayRef?.dispose();
@@ -147,6 +170,7 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.summary.set('');
     this.listening.set(true);
     this.source = this.createSource();
+    document.addEventListener('keydown', this.escListener);
     this.sub = this.source.start().subscribe({
       next: e => {
         this.transcript.set(e.text);
@@ -154,11 +178,84 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
       },
       error: err => {
         this.error.set(err?.error?.detail ?? err?.message ?? 'Microphone or transcription unavailable.');
+        this.stopWaveform();
         this.listening.set(false);
         this.processing.set(false);
       },
-      complete: () => this.listening.set(false),
+      complete: () => {
+        this.stopWaveform();
+        this.listening.set(false);
+      },
     });
+    this.startWaveform();
+  }
+
+  cancelDictation(): void {
+    this.stopWaveform();
+    this.source?.cancel?.();
+    this.sub?.unsubscribe();
+    this.listening.set(false);
+    this.processing.set(false);
+    this.transcript.set('');
+  }
+
+  // ---------- waveform: client-side input-level bars, independent of the STT engine ----------
+
+  private startWaveform(): void {
+    const tryAttach = (attempt = 0): void => {
+      const stream = this.source?.mediaStream;
+      if (!stream) {
+        if (attempt < 40 && this.listening()) setTimeout(() => tryAttach(attempt + 1), 50);
+        return;
+      }
+      this.audioCtx = new AudioContext();
+      const analyser = this.audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      this.audioCtx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      this.levels = [];
+      let lastSample = 0;
+
+      const draw = (now: number) => {
+        if (!this.listening()) return;
+        if (now - lastSample > 45) { // ~22 bars/second scroll
+          lastSample = now;
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+          this.levels.push(Math.min(1, Math.sqrt(sum / data.length) * 4));
+          if (this.levels.length > 64) this.levels.shift();
+        }
+        const canvas = this.waveCanvas()?.nativeElement;
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const mid = canvas.height / 2;
+          for (let i = 0; i < 64; i++) {
+            const level = this.levels[this.levels.length - 64 + i] ?? -1;
+            const x = i * 4 + 1;
+            if (level < 0.02) { // silence (or not yet recorded) → baseline dot
+              ctx.fillStyle = level < 0 ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.45)';
+              ctx.fillRect(x, mid - 1, 2, 2);
+            } else {
+              const h = Math.max(3, level * (canvas.height - 6));
+              ctx.fillStyle = 'rgba(255,255,255,.9)';
+              ctx.fillRect(x, mid - h / 2, 2, h);
+            }
+          }
+        }
+        this.rafId = requestAnimationFrame(draw);
+      };
+      this.rafId = requestAnimationFrame(draw);
+    };
+    tryAttach();
+  }
+
+  private stopWaveform(): void {
+    cancelAnimationFrame(this.rafId);
+    document.removeEventListener('keydown', this.escListener);
+    void this.audioCtx?.close().catch(() => {});
+    this.audioCtx = undefined;
   }
 
   private stop(): void {
