@@ -35,10 +35,10 @@ public static class ExtractEndpoints
             }
             catch (HttpRequestException ex)
             {
-                lf.CreateLogger("Extract").LogWarning(ex, "Extraction provider unreachable");
+                lf.CreateLogger("Extract").LogWarning(ex, "Extraction provider error");
                 return Results.Problem(statusCode: 503,
-                    title: "Extraction provider unreachable",
-                    detail: "Layer 2 LLM (Ollama/OpenAI) is not available. Check that Ollama is running or an OpenAI key is configured.");
+                    title: "Extraction provider error",
+                    detail: ex.Message); // surface the provider's own message (billing, auth, connectivity)
             }
             catch (InvalidOperationException ex)
             {
