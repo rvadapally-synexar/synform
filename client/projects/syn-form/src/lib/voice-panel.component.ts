@@ -6,8 +6,8 @@ import {
   ViewContainerRef, inject, input, signal, viewChild,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AudioSource, VibeVoiceAudioSource, WebAudioSource } from './audio-source';
-import { SynFormDataService } from './data.service';
+import { AudioSource, VibeVoiceAudioSource } from './audio-source';
+import { SttEngine, SynFormDataService } from './data.service';
 import { PointerModeService } from './pointer';
 import { SynFormComponent } from './syn-form.component';
 
@@ -15,11 +15,11 @@ import { SynFormComponent } from './syn-form.component';
  * <syn-voice-panel> — floating dictation panel (spec §8). CDK overlay: bottom-right on
  * desktop, bottom-center (thumb-reachable) on touch.
  *
- * Population is WHOLE-TRANSCRIPT, both engines: batch (whisper/vibevoice) transcribes
- * the full recording on stop; streaming (deepgram) shows live text while dictating but
- * only BUFFERS the finalized segments — the single /extract call runs on the complete
- * joined transcript when the user taps ✓. Per-utterance extraction is deliberately
- * gone: it populated fields from fragments out of context ("only the last part applied").
+ * EVERY engine is push-to-talk batch: record the whole dictation → one transcription →
+ * one /extract over the complete transcript → one populate. Deepgram streaming was
+ * tried and rejected (2026-06-12): per-utterance extraction populated fields from
+ * fragments out of context, and live mid-dictation population had no user value.
+ * The engine dropdown lets the user A/B Whisper vs Deepgram on the same workflow.
  */
 @Component({
   selector: 'syn-voice-panel',
@@ -34,11 +34,23 @@ import { SynFormComponent } from './syn-form.component';
             <button type="button" class="mic" (click)="toggle()" aria-label="Start dictation">🎤</button>
             <div class="status">
               @if (error()) { <span class="err">{{ error() }}</span> }
-              @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing… }
+              @else if (processing()) { <span class="spin" aria-hidden="true"></span> Transcribing ({{ engineLabel(engine()) }})… }
               @else if (summary()) { <span class="summary">{{ summary() }}</span> }
               @else { Tap the mic and dictate }
             </div>
+            @if (available().length > 1) {
+              <!-- [selected] per option, NOT [value] on the select: the select re-renders
+                   when recording ends, and a value set before options exist silently
+                   falls back to the first option (displayed "whisper", used deepgram). -->
+              <select class="engine-sel" (change)="selectEngine($event)"
+                      aria-label="Speech engine" title="Speech-to-text engine">
+                @for (e of available(); track e) {
+                  <option [value]="e" [selected]="e === engine()">{{ engineLabel(e) }}</option>
+                }
+              </select>
+            }
           } @else {
+            <span class="engine-badge">{{ engineLabel(engine()) }}</span>
             <!-- Recording: live input-level waveform (client-side, engine-independent) + ✕/✓ -->
             <canvas #wave class="wave" width="260" height="36" aria-hidden="true"></canvas>
             @if (transcript()) { <span class="live-partial">{{ transcript() }}</span> }
@@ -74,6 +86,15 @@ import { SynFormComponent } from './syn-form.component';
     .ctl {
       width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer;
       font-size: 17px; flex-shrink: 0; display: grid; place-items: center;
+    }
+    .engine-sel {
+      background: rgb(255 255 255 / .08); color: #d1d5db; border: 1px solid rgb(255 255 255 / .18);
+      border-radius: 8px; padding: 5px 8px; font-size: 12px; cursor: pointer; flex-shrink: 0;
+    }
+    .engine-sel option { background: #1f2937; }
+    .engine-badge {
+      background: rgb(255 255 255 / .1); color: #d1d5db; border-radius: 8px;
+      padding: 3px 8px; font-size: 11px; flex-shrink: 0;
     }
     .ctl.cancel { background: rgb(255 255 255 / .12); color: #f3f4f6; }
     .ctl.cancel:hover { background: rgb(220 38 38 / .55); }
@@ -119,15 +140,12 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   transcript = signal('');
   summary = signal('');
   error = signal('');
-  engine = signal<'whisper' | 'vibevoice' | 'deepgram' | 'none'>('none');
+  /** User-selected STT engine (dropdown); defaults to the server's resolution. */
+  engine = signal<SttEngine>('none');
+  /** Engines the server has credentials for — the dropdown renders when there are 2+. */
+  available = signal<SttEngine[]>([]);
   /** Every transcribed utterance, newest last — the user sees exactly what the ASR heard. */
   log = signal<string[]>([]);
-  /** Batch engines record until tap-stop, then transcribe; deepgram streams live. */
-  private isBatch = () => this.engine() === 'vibevoice' || this.engine() === 'whisper';
-  /** Streaming: finalized Deepgram segments accumulate here until ✓; a long utterance
-   * yields several finals, so the latest event is never "the whole thing". */
-  private finalSegments: string[] = [];
-  private loggedUpTo = 0;
 
   private data = inject(SynFormDataService);
   private pointer = inject(PointerModeService);
@@ -151,15 +169,29 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
       : this.overlay.position().global().right('24px').bottom('24px');
     this.overlayRef = this.overlay.create({ positionStrategy: position, hasBackdrop: false });
     this.overlayRef.attach(new TemplatePortal(this.panelTpl(), this.vcr));
-    try { this.engine.set((await this.data.sttEngine()).engine); } catch { this.engine.set('none'); }
+    try {
+      const info = await this.data.sttEngine();
+      this.available.set(info.available);
+      const remembered = localStorage.getItem('synform-stt-engine') as SttEngine | null;
+      this.engine.set(remembered && info.available.includes(remembered) ? remembered : info.engine);
+    } catch {
+      this.engine.set('none');
+    }
   }
 
-  /** Both engines share the AudioSource seam — only the lifecycle differs:
-   * deepgram streams continuously; vibevoice records until stop, then emits once. */
+  selectEngine(event: Event): void {
+    const value = (event.target as HTMLSelectElement).value as SttEngine;
+    this.engine.set(value);
+    localStorage.setItem('synform-stt-engine', value);
+  }
+
+  engineLabel(e: SttEngine): string {
+    return e === 'whisper' ? 'Whisper (Azure)' : e === 'deepgram' ? 'Deepgram' : e === 'vibevoice' ? 'VibeVoice' : e;
+  }
+
+  /** Record-then-transcribe for every engine; the selected engine rides along as a form field. */
   private createSource(): AudioSource {
-    return this.isBatch()
-      ? new VibeVoiceAudioSource(blob => this.data.transcribe(blob, this.layoutKey()))
-      : new WebAudioSource(async () => (await this.data.sttToken()).access_token);
+    return new VibeVoiceAudioSource(blob => this.data.transcribe(blob, this.layoutKey(), this.engine()));
   }
 
   ngOnDestroy(): void {
@@ -177,25 +209,12 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.error.set('');
     this.summary.set('');
     this.listening.set(true);
-    this.finalSegments = [];
-    this.loggedUpTo = 0;
     this.source = this.createSource();
     document.addEventListener('keydown', this.escListener);
     this.sub = this.source.start().subscribe({
       next: e => {
-        if (this.isBatch()) {
-          this.transcript.set(e.text);
-          if (e.utteranceEnd) this.handleUtterance(e.text);
-          return;
-        }
-        // Streaming: live feedback only — populate nothing until the user finishes.
-        if (e.isFinal) {
-          this.finalSegments.push(e.text);
-          this.transcript.set('');
-          if (e.utteranceEnd) this.logTail();
-        } else {
-          this.transcript.set(e.text);
-        }
+        this.transcript.set(e.text);
+        if (e.utteranceEnd) this.handleUtterance(e.text);
       },
       error: err => {
         this.error.set(err?.error?.detail ?? err?.message ?? 'Microphone or transcription unavailable.');
@@ -206,17 +225,9 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
       complete: () => {
         this.stopWaveform();
         this.listening.set(false);
-        if (!this.isBatch()) void this.finishStreaming();
       },
     });
     this.startWaveform();
-  }
-
-  /** Append not-yet-logged finalized segments to the visible transcript log. */
-  private logTail(extra = ''): void {
-    const tail = [...this.finalSegments.slice(this.loggedUpTo), ...(extra ? [extra] : [])].join(' ').trim();
-    if (tail) this.log.update(entries => [...entries, tail]);
-    this.loggedUpTo = this.finalSegments.length;
   }
 
   cancelDictation(): void {
@@ -226,8 +237,6 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.listening.set(false);
     this.processing.set(false);
     this.transcript.set('');
-    this.finalSegments = [];
-    this.loggedUpTo = 0;
   }
 
   // ---------- waveform: client-side input-level bars, independent of the STT engine ----------
@@ -290,28 +299,10 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   }
 
   private stop(): void {
-    // Both engines: stopping ends the recording but KEEPS the subscription alive.
-    // Batch: the transcript event arrives after the backend transcribes the blob.
-    // Streaming: stop() sends CloseStream; Deepgram flushes the remaining finals,
-    // then closes — extraction runs in the complete handler on the full transcript.
+    // Push-to-talk: stopping ends the recording; keep the subscription alive —
+    // the transcript event arrives AFTER stop, once the backend transcribes the blob.
     this.processing.set(true);
-    if (!this.isBatch()) {
-      this.stopWaveform();
-      this.listening.set(false);
-    }
     this.source?.stop();
-  }
-
-  /** Streaming finish: ONE extraction over the entire dictation, like the batch path. */
-  private async finishStreaming(): Promise<void> {
-    const partial = this.transcript().trim(); // unfinalized tail, best estimate of the last words
-    this.logTail(partial);
-    const full = [...this.finalSegments, ...(partial ? [partial] : [])].join(' ').trim();
-    this.finalSegments = [];
-    this.loggedUpTo = 0;
-    this.transcript.set('');
-    if (!full) { this.processing.set(false); return; }
-    await this.extractAndPopulate(full);
   }
 
   private async handleUtterance(text: string): Promise<void> {
@@ -332,7 +323,8 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
       const review = Object.values(extraction.confidences).filter(c => c < 0.85).length;
       this.summary.set(`${result.applied.length} field${result.applied.length === 1 ? '' : 's'} updated`
         + (review ? `, ${review} needs review` : '')
-        + (result.skipped.length ? `, ${result.skipped.length} skipped` : ''));
+        + (result.skipped.length ? `, ${result.skipped.length} skipped` : '')
+        + ` · ${this.engineLabel(this.engine())}`);
     } catch {
       this.error.set('Extraction failed — transcript kept. Tap mic to retry.');
     } finally {

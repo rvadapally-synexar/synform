@@ -11,3 +11,4 @@ appsettings.local.json
 # runtime audio clips from the STT compare harness (note: must stay narrower than
 # "data/" — Windows git matches ignores case-insensitively and would swallow Data/*.cs)
 server/SynForm.Api/data/stt-compare/
+server/SynForm.Api/wwwroot/test-dictation.wav

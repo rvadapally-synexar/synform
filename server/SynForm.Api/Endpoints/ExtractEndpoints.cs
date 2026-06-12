@@ -46,9 +46,10 @@ public static class ExtractEndpoints
             }
         });
 
-        // Which STT engine is active? The voice panel adapts its UX accordingly.
-        // whisper / vibevoice = push-to-talk batch (both Azure, our tenancy, Microsoft BAA);
-        // deepgram = streaming with endpointing. "batch" engines share /api/stt/transcribe.
+        // Which STT engine is the default, and which are selectable? ALL engines are
+        // push-to-talk batch in the form filler: record the whole dictation, transcribe
+        // once, extract once. (Deepgram streaming exists but populated fields from
+        // fragments out of context — whole-transcript is the validated UX.)
         static string ResolveEngine(IConfiguration config, VibeVoiceSttService vibeVoice, WhisperSttService whisper)
         {
             var engine = config["Transcription:Engine"]?.ToLowerInvariant().Trim();
@@ -59,19 +60,33 @@ public static class ExtractEndpoints
             return "none";
         }
 
-        app.MapGet("/api/stt/engine", (IConfiguration config, VibeVoiceSttService vibeVoice, WhisperSttService whisper) =>
-            Results.Ok(new { engine = ResolveEngine(config, vibeVoice, whisper) }));
+        static string[] AvailableEngines(VibeVoiceSttService vibeVoice, WhisperSttService whisper, DeepgramSttService deepgram) =>
+            new[]
+            {
+                whisper.IsConfigured ? "whisper" : null,
+                deepgram.IsConfigured ? "deepgram" : null,
+                vibeVoice.IsConfigured ? "vibevoice" : null,
+            }.Where(e => e != null).Select(e => e!).ToArray();
 
-        // Batch transcription for the push-to-talk path (Whisper or VibeVoice on Azure).
+        app.MapGet("/api/stt/engine", (IConfiguration config, VibeVoiceSttService vibeVoice, WhisperSttService whisper, DeepgramSttService deepgram) =>
+            Results.Ok(new
+            {
+                engine = ResolveEngine(config, vibeVoice, whisper),
+                available = AvailableEngines(vibeVoice, whisper, deepgram),
+            }));
+
+        // Batch transcription for the push-to-talk path. Optional 'engine' form field
+        // overrides the server default (the voice panel's engine dropdown).
         app.MapPost("/api/stt/transcribe", async (
             HttpRequest request, IConfiguration config,
-            VibeVoiceSttService vibeVoice, WhisperSttService whisper, LayoutRepo layouts,
-            ILoggerFactory lf, CancellationToken ct) =>
+            VibeVoiceSttService vibeVoice, WhisperSttService whisper, DeepgramSttService deepgram,
+            LayoutRepo layouts, ILoggerFactory lf, CancellationToken ct) =>
         {
             if (!request.HasFormContentType || request.Form.Files.Count == 0)
                 return Results.BadRequest(new { error = "Multipart form with an 'audio' file is required." });
 
-            var engine = ResolveEngine(config, vibeVoice, whisper);
+            var requested = request.Form["engine"].FirstOrDefault()?.ToLowerInvariant().Trim();
+            var engine = string.IsNullOrEmpty(requested) ? ResolveEngine(config, vibeVoice, whisper) : requested;
             var file = request.Form.Files["audio"] ?? request.Form.Files[0];
             using var ms = new MemoryStream();
             await file.CopyToAsync(ms, ct);
@@ -94,9 +109,12 @@ public static class ExtractEndpoints
                     case "vibevoice" when vibeVoice.IsConfigured:
                         text = await vibeVoice.TranscribeAsync(ms.ToArray(), format, hotwords, ct);
                         break;
+                    case "deepgram" when deepgram.IsConfigured:
+                        text = (await deepgram.TranscribeAsync(ms.ToArray(), format, hotwords, ct)).Text;
+                        break;
                     default:
                         return Results.Problem(statusCode: 503, title: "Transcription not configured",
-                            detail: $"Engine '{engine}' is not configured. Set Transcription:Whisper or Transcription:VibeVoice secrets.");
+                            detail: $"Engine '{engine}' is not configured. Set Transcription:Whisper, Transcription:VibeVoice, or Deepgram:ApiKey secrets.");
                 }
                 return Results.Ok(new { text });
             }

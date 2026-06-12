@@ -9,6 +9,8 @@ import {
 /** API base URL, e.g. http://localhost:5266. Provided by the host application. */
 export const SYN_FORM_API_BASE = new InjectionToken<string>('SYN_FORM_API_BASE');
 
+export type SttEngine = 'whisper' | 'vibevoice' | 'deepgram' | 'none';
+
 /**
  * The single data-access seam for the library. Components never touch HttpClient directly,
  * so a caching/outbox (offline) implementation can replace this without touching components.
@@ -110,13 +112,14 @@ export class SynFormDataService {
   sttToken(): Promise<{ access_token: string; expires_in: number }> {
     return firstValueFrom(this.http.post<{ access_token: string; expires_in: number }>(`${this.base}/api/stt/token`, {}));
   }
-  sttEngine(): Promise<{ engine: 'whisper' | 'vibevoice' | 'deepgram' | 'none' }> {
-    return firstValueFrom(this.http.get<{ engine: 'whisper' | 'vibevoice' | 'deepgram' | 'none' }>(`${this.base}/api/stt/engine`));
+  sttEngine(): Promise<{ engine: SttEngine; available: SttEngine[] }> {
+    return firstValueFrom(this.http.get<{ engine: SttEngine; available: SttEngine[] }>(`${this.base}/api/stt/engine`));
   }
-  transcribe(audio: Blob, layoutKey?: string): Promise<string> {
+  transcribe(audio: Blob, layoutKey?: string, engine?: SttEngine): Promise<string> {
     const form = new FormData();
     form.append('audio', audio, 'audio.webm');
     if (layoutKey) form.append('layoutKey', layoutKey);
+    if (engine) form.append('engine', engine);
     return firstValueFrom(this.http.post<{ text: string }>(`${this.base}/api/stt/transcribe`, form))
       .then(r => r.text);
   }
