@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STT A/B — Whisper vs Deepgram</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2129; --panel2: #212a34; --border: #2e3a47;
+    --text: #d7dee6; --muted: #8295a7; --accent: #4fb3ff;
+    --eq: #d7dee6; --rep-a: #ff9d9d; --rep-b: #8be28b; --gap: #5a6b7c;
+    --agree: #2e6b3a; --conflict: #8a3a3a; --only: #7a6b2e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 14px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 22px 60px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 18px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  label { color: var(--muted); font-size: 12.5px; }
+  select, input[type=text] { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13.5px; }
+  input[type=text] { min-width: 220px; }
+  button { background: var(--accent); color: #06121d; font-weight: 600; border: 0; border-radius: 7px; padding: 9px 18px; font-size: 13.5px; cursor: pointer; }
+  button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.rec-live { background: #e25563; color: #fff; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .65; } }
+  .stats { display: flex; gap: 26px; flex-wrap: wrap; margin: 4px 0 14px; }
+  .stat .v { font-size: 21px; font-weight: 650; }
+  .stat .k { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .engine { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .engine h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
+  .transcript { white-space: pre-wrap; word-break: break-word; font-size: 14.5px; }
+  .transcript .rep-a { background: #4d2020; color: var(--rep-a); border-radius: 3px; padding: 0 2px; }
+  .transcript .rep-b { background: #1e4220; color: var(--rep-b); border-radius: 3px; padding: 0 2px; }
+  .transcript .gap { color: var(--gap); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  td.mono { font-family: Consolas, monospace; font-size: 12.5px; }
+  .pill { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 11.5px; font-weight: 600; }
+  .pill.agree { background: var(--agree); } .pill.conflict { background: var(--conflict); }
+  .pill.whisper-only, .pill.deepgram-only { background: var(--only); }
+  .err { color: #ff9d9d; }
+  #runs tr.run { cursor: pointer; } #runs tr.run:hover { background: var(--panel2); }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  h2 { font-size: 14px; color: var(--muted); margin: 26px 0 10px; text-transform: uppercase; letter-spacing: .07em; }
+  audio { width: 100%; margin-top: 8px; height: 34px; }
+  #spinner { color: var(--accent); display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>STT A/B</h1>
+  <span class="sub">Azure Whisper vs Deepgram (batch, identical audio + identical vocabulary biasing) — neither engine is ground truth; highlights show <i>disagreement</i></span>
+</header>
+<main>
+  <div class="card">
+    <div class="row">
+      <button id="recBtn">&#9679; Record</button>
+      <button id="fileBtn" class="secondary">Upload audio file…</button>
+      <input type="file" id="fileInput" accept="audio/*" hidden>
+      <label>Layout <select id="layout"></select></label>
+      <label><input type="checkbox" id="extract" checked> Compare extraction (form-fill level)</label>
+      <input type="text" id="note" placeholder="Note — what you dictated / scenario">
+      <span id="spinner">comparing… (both engines in flight)</span>
+    </div>
+    <div class="hint" style="margin-top:8px">Dictate the same clinical content you'd give the form. One clip is sent to both engines byte-for-byte.</div>
+  </div>
+
+  <div id="result"></div>
+
+  <h2>Run history</h2>
+  <div class="card">
+    <table id="runs">
+      <thead><tr><th>When</th><th>Layout</th><th>Audio</th><th>Whisper</th><th>Deepgram</th><th>Divergence</th><th>Field conflicts</th><th>Note</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function loadLayouts() {
+  const all = await (await fetch('/api/layouts')).json();
+  const published = all.filter(l => l.latestPublishedVersion != null);
+  $('#layout').innerHTML = '<option value="">(none — transcript only)</option>' +
+    published.map(l => `<option value="${esc(l.layoutKey)}" ${l.layoutKey === 'pre-anesthesia-assessment' ? 'selected' : ''}>${esc(l.title || l.layoutKey)}</option>`).join('');
+}
+
+// --- capture ---------------------------------------------------------------
+let mediaRecorder = null, chunks = [];
+$('#recBtn').onclick = async () => {
+  if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); return; }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  chunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  mediaRecorder.ondataavailable = e => chunks.push(e.data);
+  mediaRecorder.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    $('#recBtn').classList.remove('rec-live'); $('#recBtn').innerHTML = '&#9679; Record';
+    submit(new Blob(chunks, { type: 'audio/webm' }), 'clip.webm');
+  };
+  mediaRecorder.start();
+  $('#recBtn').classList.add('rec-live'); $('#recBtn').textContent = '■ Stop & compare';
+};
+$('#fileBtn').onclick = () => $('#fileInput').click();
+$('#fileInput').onchange = () => {
+  const f = $('#fileInput').files[0];
+  if (f) submit(f, f.name);
+  $('#fileInput').value = '';
+};
+
+// --- compare ---------------------------------------------------------------
+async function submit(blob, name) {
+  const fd = new FormData();
+  fd.append('audio', blob, name);
+  if ($('#layout').value) fd.append('layoutKey', $('#layout').value);
+  fd.append('extract', $('#extract').checked);
+  if ($('#note').value) fd.append('note', $('#note').value);
+  $('#spinner').style.display = 'inline'; $('#recBtn').disabled = $('#fileBtn').disabled = true;
+  try {
+    const resp = await fetch('/api/stt/compare', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) { $('#result').innerHTML = `<div class="card err">${esc(data.title || 'Failed')} — ${esc(data.detail || data.error || '')}</div>`; return; }
+    render(data, true);
+    loadRuns();
+  } finally {
+    $('#spinner').style.display = 'none'; $('#recBtn').disabled = $('#fileBtn').disabled = false;
+  }
+}
+
+// --- render ----------------------------------------------------------------
+function sideHtml(diff, text, side) { // side: 'a' = whisper, 'b' = deepgram
+  if (!diff) return esc(text ?? '');
+  return diff.segments.map(s => {
+    const own = side === 'a' ? s.a : s.b;
+    if (s.op === 'equal') return esc(own) + ' ';
+    if (s.op === 'replace') return `<span class="rep-${side}">${esc(own)}</span> `;
+    if ((s.op === 'delete' && side === 'a') || (s.op === 'insert' && side === 'b'))
+      return `<span class="rep-${side}">${esc(own)}</span> `;
+    return `<span class="gap">&#8230;</span> `;   // the other engine heard words here
+  }).join('');
+}
+
+function render(d, live) {
+  const div = d.diff ? (d.diff.divergence * 100).toFixed(1) + '%' : '—';
+  const stats = `
+    <div class="stats">
+      <div class="stat"><div class="v">${d.whisper.ms ?? '—'} ms</div><div class="k">Whisper latency</div></div>
+      <div class="stat"><div class="v">${d.deepgram.ms ?? '—'} ms</div><div class="k">Deepgram latency</div></div>
+      <div class="stat"><div class="v">${div}</div><div class="k">Word divergence</div></div>
+      <div class="stat"><div class="v">${d.diff ? d.diff.wordsA + ' / ' + d.diff.wordsB : '—'}</div><div class="k">Words W / D</div></div>
+      <div class="stat"><div class="v">${d.conflicts ?? (d.extraction?.fields ? countConflicts(d.extraction.fields) : '—')}</div><div class="k">Field conflicts</div></div>
+      ${d.audioSeconds ? `<div class="stat"><div class="v">${d.audioSeconds.toFixed(1)}s</div><div class="k">Audio</div></div>` : ''}
+    </div>`;
+  const engines = `
+    <div class="cols">
+      <div class="engine"><h3><span>AZURE WHISPER</span><span>${d.whisper.error ? '' : (d.whisper.ms ?? '') + ' ms'}</span></h3>
+        ${d.whisper.error ? `<div class="err">${esc(d.whisper.error)}</div>` : `<div class="transcript">${sideHtml(d.diff, d.whisper.text, 'a')}</div>`}</div>
+      <div class="engine"><h3><span>DEEPGRAM ${esc(d.deepgram.model || '')}</span><span>${d.deepgram.error ? '' : (d.deepgram.ms ?? '') + ' ms'}</span></h3>
+        ${d.deepgram.error ? `<div class="err">${esc(d.deepgram.error)}</div>` : `<div class="transcript">${sideHtml(d.diff, d.deepgram.text, 'b')}</div>`}</div>
+    </div>`;
+  let extraction = '';
+  const ex = d.extraction;
+  if (ex) {
+    const fields = ex.fields ?? [];
+    const rows = fields.map(f => `
+      <tr><td class="mono">${esc(f.field)}</td>
+          <td class="mono">${esc(f.whisper ?? '')}</td>
+          <td class="mono">${esc(f.deepgram ?? '')}</td>
+          <td><span class="pill ${f.status}">${f.status}</span></td></tr>`).join('');
+    extraction = `
+      <h2>Extraction comparison (layer: ${esc(ex.whisperLayer || '?')} / ${esc(ex.deepgramLayer || '?')})</h2>
+      ${ex.whisperError ? `<div class="err">Whisper-side extraction: ${esc(ex.whisperError)}</div>` : ''}
+      ${ex.deepgramError ? `<div class="err">Deepgram-side extraction: ${esc(ex.deepgramError)}</div>` : ''}
+      ${rows ? `<table><thead><tr><th>Field</th><th>From Whisper transcript</th><th>From Deepgram transcript</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : ''}`;
+  }
+  const audio = !live && d.id ? `<audio controls src="/api/stt/compare/runs/${d.id}/audio"></audio>` : '';
+  $('#result').innerHTML = `<div class="card">${stats}${engines}${audio}${extraction}</div>`;
+  $('#result').scrollIntoView({ behavior: 'smooth' });
+}
+const countConflicts = fields => fields.filter(f => f.status !== 'agree').length;
+
+// --- history ---------------------------------------------------------------
+async function loadRuns() {
+  const runs = await (await fetch('/api/stt/compare/runs?limit=100')).json();
+  $('#runs tbody').innerHTML = runs.map(r => `
+    <tr class="run" data-id="${r.id}">
+      <td>${new Date(r.createdAt).toLocaleString()}</td>
+      <td>${esc(r.layoutKey ?? '')}</td>
+      <td>${r.audioSeconds ? r.audioSeconds.toFixed(1) + 's' : Math.round(r.audioBytes / 1024) + ' KB'}</td>
+      <td>${r.whisperError ? '<span class="err">error</span>' : (r.whisperMs ?? '—') + ' ms'}</td>
+      <td>${r.deepgramError ? '<span class="err">error</span>' : (r.deepgramMs ?? '—') + ' ms'}</td>
+      <td>${r.divergence != null ? (r.divergence * 100).toFixed(1) + '%' : '—'}</td>
+      <td>${r.conflicts ?? '—'}</td>
+      <td>${esc(r.note ?? '')}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="hint">No runs yet — record a clip above.</td></tr>';
+  document.querySelectorAll('#runs tr.run').forEach(tr =>
+    tr.onclick = async () => render(await (await fetch(`/api/stt/compare/runs/${tr.dataset.id}`)).json(), false));
+}
+
+loadLayouts();
+loadRuns();
+</script>
+</body>
+</html>

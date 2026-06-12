@@ -20,6 +20,8 @@ builder.Services.AddSingleton<OpenAiProvider>();
 builder.Services.AddSingleton<AnthropicProvider>();
 builder.Services.AddSingleton<VibeVoiceSttService>();
 builder.Services.AddSingleton<WhisperSttService>();
+builder.Services.AddSingleton<DeepgramSttService>();
+builder.Services.AddSingleton<CompareRunRepo>();
 builder.Services.AddHttpClient();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -34,6 +36,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 app.UseCors();
+app.UseStaticFiles();   // wwwroot: the STT compare observability page (/stt-compare.html)
 
 // Apply db/*.sql migrations (schema + seed) at startup.
 var sqlDir = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "..", "db"));
@@ -43,6 +46,7 @@ app.MapLayoutEndpoints();
 app.MapLookupEndpoints();
 app.MapRecordEndpoints();
 app.MapExtractEndpoints();
+app.MapCompareEndpoints();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
