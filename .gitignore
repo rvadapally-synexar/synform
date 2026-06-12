@@ -7,3 +7,4 @@ obj/
 .vs/
 .DS_Store
 appsettings.*.local.json
+appsettings.local.json

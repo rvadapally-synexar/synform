@@ -4,9 +4,11 @@ using SynForm.Api.Extraction;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Secrets (API keys) live in dotnet user-secrets, never in appsettings/repo.
-// Loaded unconditionally — this POC runs without an ASPNETCORE_ENVIRONMENT set.
+// Secrets (API keys) live in user-secrets or appsettings.local.json (gitignored),
+// never in the tracked appsettings.json. Loaded unconditionally — this POC runs
+// without an ASPNETCORE_ENVIRONMENT set.
 builder.Configuration.AddUserSecrets<Program>(optional: true);
+builder.Configuration.AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true);
 
 builder.Services.AddSingleton<Db>();
 builder.Services.AddSingleton<LayoutRepo>();
