@@ -213,8 +213,11 @@ public sealed class Layer1Resolver
                 // Long remainders are narrative — leave them for Layer 2's language understanding.
                 // Strip connective filler left over after phrase removal: "The name is Andrew Tate"
                 // minus the "name" trigger leaves "the is andrew tate" → "andrew tate".
+                // \b\s* (not \s+): a remainder that is ONLY filler ("His airway notes," → "his")
+                // must strip to empty and decline, or it claims the field with a pronoun and
+                // Layer-1-wins shadows the LLM's real answer (2026-06-12 airway-notes bug).
                 var cleaned = Regex.Replace(remainder.Trim(),
-                    @"^(?:(?:the|a|an|is|was|are|of|for|her|his|their|patient)\s+)+", "", RegexOptions.IgnoreCase).Trim();
+                    @"^(?:(?:the|a|an|is|was|are|of|for|her|his|their|patient)\b\s*)+", "", RegexOptions.IgnoreCase).Trim();
                 if (cleaned == "" || CountWords(cleaned) > 6) return false;
                 // Normalization lowercased the segment. Short all-alphabetic values are almost
                 // always names → Title Case; anything else (notes fragments) → sentence case.
