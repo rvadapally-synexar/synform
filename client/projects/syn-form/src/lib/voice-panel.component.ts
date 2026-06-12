@@ -13,9 +13,13 @@ import { SynFormComponent } from './syn-form.component';
 
 /**
  * <syn-voice-panel> — floating dictation panel (spec §8). CDK overlay: bottom-right on
- * desktop, bottom-center (thumb-reachable) on touch. On each completed utterance the
- * final transcript goes to /extract and the result flows through synForm.populate() —
- * the same seam as every other modality.
+ * desktop, bottom-center (thumb-reachable) on touch.
+ *
+ * Population is WHOLE-TRANSCRIPT, both engines: batch (whisper/vibevoice) transcribes
+ * the full recording on stop; streaming (deepgram) shows live text while dictating but
+ * only BUFFERS the finalized segments — the single /extract call runs on the complete
+ * joined transcript when the user taps ✓. Per-utterance extraction is deliberately
+ * gone: it populated fields from fragments out of context ("only the last part applied").
  */
 @Component({
   selector: 'syn-voice-panel',
@@ -120,6 +124,10 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   log = signal<string[]>([]);
   /** Batch engines record until tap-stop, then transcribe; deepgram streams live. */
   private isBatch = () => this.engine() === 'vibevoice' || this.engine() === 'whisper';
+  /** Streaming: finalized Deepgram segments accumulate here until ✓; a long utterance
+   * yields several finals, so the latest event is never "the whole thing". */
+  private finalSegments: string[] = [];
+  private loggedUpTo = 0;
 
   private data = inject(SynFormDataService);
   private pointer = inject(PointerModeService);
@@ -169,12 +177,25 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.error.set('');
     this.summary.set('');
     this.listening.set(true);
+    this.finalSegments = [];
+    this.loggedUpTo = 0;
     this.source = this.createSource();
     document.addEventListener('keydown', this.escListener);
     this.sub = this.source.start().subscribe({
       next: e => {
-        this.transcript.set(e.text);
-        if (e.utteranceEnd) this.handleUtterance(e.text);
+        if (this.isBatch()) {
+          this.transcript.set(e.text);
+          if (e.utteranceEnd) this.handleUtterance(e.text);
+          return;
+        }
+        // Streaming: live feedback only — populate nothing until the user finishes.
+        if (e.isFinal) {
+          this.finalSegments.push(e.text);
+          this.transcript.set('');
+          if (e.utteranceEnd) this.logTail();
+        } else {
+          this.transcript.set(e.text);
+        }
       },
       error: err => {
         this.error.set(err?.error?.detail ?? err?.message ?? 'Microphone or transcription unavailable.');
@@ -185,9 +206,17 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
       complete: () => {
         this.stopWaveform();
         this.listening.set(false);
+        if (!this.isBatch()) void this.finishStreaming();
       },
     });
     this.startWaveform();
+  }
+
+  /** Append not-yet-logged finalized segments to the visible transcript log. */
+  private logTail(extra = ''): void {
+    const tail = [...this.finalSegments.slice(this.loggedUpTo), ...(extra ? [extra] : [])].join(' ').trim();
+    if (tail) this.log.update(entries => [...entries, tail]);
+    this.loggedUpTo = this.finalSegments.length;
   }
 
   cancelDictation(): void {
@@ -197,6 +226,8 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
     this.listening.set(false);
     this.processing.set(false);
     this.transcript.set('');
+    this.finalSegments = [];
+    this.loggedUpTo = 0;
   }
 
   // ---------- waveform: client-side input-level bars, independent of the STT engine ----------
@@ -259,22 +290,37 @@ export class SynVoicePanelComponent implements OnInit, OnDestroy {
   }
 
   private stop(): void {
-    if (this.isBatch()) {
-      // Push-to-talk: stopping ends the recording; keep the subscription alive —
-      // the transcript event arrives AFTER stop, once the backend transcribes the blob.
-      this.processing.set(true);
-      this.source?.stop();
-      return;
+    // Both engines: stopping ends the recording but KEEPS the subscription alive.
+    // Batch: the transcript event arrives after the backend transcribes the blob.
+    // Streaming: stop() sends CloseStream; Deepgram flushes the remaining finals,
+    // then closes — extraction runs in the complete handler on the full transcript.
+    this.processing.set(true);
+    if (!this.isBatch()) {
+      this.stopWaveform();
+      this.listening.set(false);
     }
-    this.sub?.unsubscribe();
     this.source?.stop();
-    this.listening.set(false);
+  }
+
+  /** Streaming finish: ONE extraction over the entire dictation, like the batch path. */
+  private async finishStreaming(): Promise<void> {
+    const partial = this.transcript().trim(); // unfinalized tail, best estimate of the last words
+    this.logTail(partial);
+    const full = [...this.finalSegments, ...(partial ? [partial] : [])].join(' ').trim();
+    this.finalSegments = [];
+    this.loggedUpTo = 0;
     this.transcript.set('');
+    if (!full) { this.processing.set(false); return; }
+    await this.extractAndPopulate(full);
   }
 
   private async handleUtterance(text: string): Promise<void> {
-    this.processing.set(true);
     this.log.update(entries => [...entries, text]);
+    await this.extractAndPopulate(text);
+  }
+
+  private async extractAndPopulate(text: string): Promise<void> {
+    this.processing.set(true);
     try {
       const extraction = await this.data.extract({
         layoutKey: this.layoutKey(),

@@ -2,6 +2,10 @@ import { Observable } from 'rxjs';
 
 export interface TranscriptEvent {
   text: string;
+  /** Deepgram: this segment's text is finalized and will not be revised. A long
+   * utterance produces SEVERAL finals — consumers must accumulate them, never
+   * treat the latest final as the whole utterance. */
+  isFinal: boolean;
   /** Deepgram endpointing: true when the utterance is complete (speech_final). */
   utteranceEnd: boolean;
 }
@@ -61,7 +65,7 @@ export class WebAudioSource implements AudioSource {
             const msg = JSON.parse(event.data);
             const text = msg.channel?.alternatives?.[0]?.transcript ?? '';
             if (msg.type === 'Results' && text)
-              subscriber.next({ text, utteranceEnd: msg.is_final && msg.speech_final });
+              subscriber.next({ text, isFinal: !!msg.is_final, utteranceEnd: msg.is_final && msg.speech_final });
           };
           this.ws.onerror = () => subscriber.error(new Error('Deepgram connection failed.'));
           this.ws.onclose = () => subscriber.complete();
@@ -76,7 +80,15 @@ export class WebAudioSource implements AudioSource {
   stop(): void {
     this.recorder?.state !== 'inactive' && this.recorder?.stop();
     this.stream?.getTracks().forEach(t => t.stop());
-    this.ws?.close();
+    // Graceful finish: CloseStream makes Deepgram transcribe buffered audio and send the
+    // remaining finals BEFORE closing — without it the last words of dictation are lost.
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const ws = this.ws;
+      ws.send(JSON.stringify({ type: 'CloseStream' }));
+      setTimeout(() => { if (ws.readyState !== WebSocket.CLOSED) ws.close(); }, 3000);
+    } else {
+      this.ws?.close();
+    }
     this.recorder = undefined; this.stream = undefined; this.ws = undefined;
   }
 }
@@ -113,7 +125,7 @@ export class VibeVoiceAudioSource implements AudioSource {
             if (this.cancelled) { subscriber.complete(); return; } // ✕ — discard, never transcribe
             try {
               const text = await this.transcribe(new Blob(this.chunks, { type: 'audio/webm' }));
-              if (text) subscriber.next({ text, utteranceEnd: true });
+              if (text) subscriber.next({ text, isFinal: true, utteranceEnd: true });
               subscriber.complete();
             } catch (e) {
               subscriber.error(e);
