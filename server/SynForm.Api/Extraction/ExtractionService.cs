@@ -91,6 +91,11 @@ public sealed class ExtractionService(
             }
         }
 
+        // Search-resolve: map spoken values for high-cardinality reference fields to the
+        // registry id/canonical (physician name → NPI). Ambiguous matches get low confidence
+        // so the UI flags them for human confirmation. Runs before normalization.
+        ResolveSearchFields(layout, values, confidences);
+
         // Normalizer — deterministic, applies to both layers' output.
         var normalized = Normalizer.Normalize(layout, lookups, values, skipped);
 
@@ -104,6 +109,57 @@ public sealed class ExtractionService(
             UnmatchedText = unmatched,
             Layer = layer,
         };
+    }
+
+    /// <summary>
+    /// Resolve spoken values for search-backed reference fields against their index.
+    /// search (single) → top hit's id, confidence drops when ambiguous; searchMulti → each
+    /// item canonicalized (kept as-is if no hit). tags are free text and skipped here.
+    /// </summary>
+    private void ResolveSearchFields(
+        LayoutDef layout, Dictionary<string, System.Text.Json.JsonElement> values, Dictionary<string, double> confidences)
+    {
+        var search = services.GetRequiredService<SearchRepo>();
+        foreach (var f in layout.Fields)
+        {
+            if (f.Options?.SearchKey is not { } key) continue;
+            if (f.ControlType is not ("search" or "searchMulti")) continue; // tags stay free text
+            if (!values.TryGetValue(f.Name, out var v)) continue;
+
+            if (f.ControlType == "search" && v.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var term = v.GetString()!.Trim();
+                if (term.Length == 0) continue;
+                if (search.Resolve(key, term) is not null) continue; // already a valid id
+                var hits = search.Search(key, term, 2);
+                if (hits.Count == 0)
+                {
+                    values.Remove(f.Name);
+                    confidences.Remove(f.Name);
+                    logger.LogInformation("Search-resolve {Field}: '{Term}' matched nothing in {Key} — dropped", f.Name, term, key);
+                    continue;
+                }
+                values[f.Name] = System.Text.Json.JsonSerializer.SerializeToElement(hits[0].Value);
+                confidences[f.Name] = hits.Count == 1 ? 0.8 : 0.6; // ambiguous → forces confirm
+                logger.LogInformation("Search-resolve {Field}: '{Term}' → {Value} ({N} candidates)", f.Name, term, hits[0].Value, hits.Count);
+            }
+            else if (f.ControlType == "searchMulti" && v.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var resolved = v.EnumerateArray()
+                    .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
+                    .Select(e => e.GetString()!.Trim())
+                    .Where(s => s.Length > 0)
+                    .Select(term => search.Search(key, term, 1) is { Count: > 0 } h ? h[0].Value : term)
+                    .Distinct()
+                    .ToList();
+                if (resolved.Count > 0)
+                {
+                    values[f.Name] = System.Text.Json.JsonSerializer.SerializeToElement(resolved);
+                    confidences[f.Name] = 0.85;
+                }
+                else { values.Remove(f.Name); confidences.Remove(f.Name); }
+            }
+        }
     }
 
     private Layer1Resolver GetResolver(string key, int version, LayoutDef layout, IReadOnlyDictionary<string, List<LookupRow>> lookups)

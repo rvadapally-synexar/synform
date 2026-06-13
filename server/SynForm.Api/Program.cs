@@ -22,6 +22,7 @@ builder.Services.AddSingleton<VibeVoiceSttService>();
 builder.Services.AddSingleton<WhisperSttService>();
 builder.Services.AddSingleton<DeepgramSttService>();
 builder.Services.AddSingleton<CompareRunRepo>();
+builder.Services.AddSingleton<SearchRepo>();
 builder.Services.AddHttpClient();
 
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -47,6 +48,7 @@ app.MapLookupEndpoints();
 app.MapRecordEndpoints();
 app.MapExtractEndpoints();
 app.MapCompareEndpoints();
+app.MapSearchEndpoints();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 

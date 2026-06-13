@@ -49,6 +49,12 @@ public sealed class OptionsDef
 {
     public List<OptionItem>? Inline { get; set; }
     public string? LookupKey { get; set; }
+    // High-cardinality source (NPI registry, medication formulary): options are NEVER
+    // preloaded — the client queries /api/search/{searchKey} as the user types, and the
+    // server resolves dictated values against the same index. (spec §4.2 extension)
+    public string? SearchKey { get; set; }
+    // Accept values outside any list (free comma-separated tags, e.g. comorbidities).
+    public bool FreeEntry { get; set; }
 }
 
 public sealed class OptionItem

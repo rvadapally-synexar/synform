@@ -2,7 +2,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, InjectionToken, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import {
-  ExtractResponse, FormRecord, LayoutEnvelope, LayoutSummary, LookupItem,
+  ExtractResponse, FormRecord, LayoutEnvelope, LayoutSummary, LookupItem, OptionItem,
   PartialValues, ProvenanceEntry, SaveResult,
 } from './types';
 
@@ -56,6 +56,16 @@ export class SynFormDataService {
   }
   getSchema(key: string, version: number | 'draft' | 'latestPublished'): Promise<unknown> {
     return firstValueFrom(this.http.get(`${this.base}/api/layouts/${key}/schema`, { params: { version: String(version) } }));
+  }
+
+  // --- search (high-cardinality reference sources: NPI registry, formulary, ...) ---
+  searchSource(key: string, term: string, limit = 20): Promise<OptionItem[]> {
+    return firstValueFrom(this.http.get<OptionItem[]>(`${this.base}/api/search/${key}`,
+      { params: { q: term, limit: String(limit) } }));
+  }
+  resolveSearch(key: string, id: string): Promise<OptionItem | null> {
+    return firstValueFrom(this.http.get<OptionItem>(`${this.base}/api/search/${key}/resolve`, { params: { id } }))
+      .catch(() => null);
   }
 
   // --- lookups ---

@@ -6,11 +6,15 @@ namespace SynForm.Api.Domain;
 public static class LayoutValidator
 {
     public static readonly string[] ControlTypes =
-        ["text", "textarea", "number", "dropdown", "multiselect", "radio", "checkbox", "checkboxGroup", "date", "time", "bpPair"];
+        ["text", "textarea", "number", "dropdown", "multiselect", "radio", "checkbox", "checkboxGroup", "date", "time", "bpPair",
+         "search", "searchMulti", "tags"];
 
     public static readonly string[] DataTypes = ["string", "number", "boolean", "date", "time", "string[]", "bpPair"];
 
+    // Controls whose options come from a static list (inline XOR lookup), loaded up front.
     private static readonly string[] OptionControls = ["dropdown", "multiselect", "radio", "checkboxGroup"];
+    // Controls backed by a remote search index — options are NEVER preloaded.
+    private static readonly string[] SearchControls = ["search", "searchMulti"];
     private static readonly Regex CamelCase = new("^[a-z][a-zA-Z0-9]*$", RegexOptions.Compiled);
 
     /// <param name="existingLookupKeys">All lookup_keys present in lookup_item.</param>
@@ -28,14 +32,27 @@ public static class LayoutValidator
             if (!DataTypes.Contains(f.DataType)) errors.Add($"Field '{f.Name}': unknown dataType '{f.DataType}'.");
 
             var isOptionControl = OptionControls.Contains(f.ControlType);
+            var isSearchControl = SearchControls.Contains(f.ControlType);
+            var isTags = f.ControlType == "tags";
             var hasInline = f.Options?.Inline is { Count: > 0 };
             var hasLookup = !string.IsNullOrEmpty(f.Options?.LookupKey);
+            var hasSearch = !string.IsNullOrEmpty(f.Options?.SearchKey);
             if (isOptionControl && hasInline == hasLookup)
                 errors.Add($"Field '{f.Name}': option controls need exactly one of options.inline / options.lookupKey.");
-            if (!isOptionControl && (hasInline || hasLookup))
+            // search/searchMulti MUST have a searchKey and nothing else; tags MAY have a searchKey
+            // (for typeahead suggestions) but is always free-entry.
+            if (isSearchControl && !hasSearch)
+                errors.Add($"Field '{f.Name}': controlType '{f.ControlType}' requires options.searchKey.");
+            if (isSearchControl && (hasInline || hasLookup))
+                errors.Add($"Field '{f.Name}': search controls take only options.searchKey, not inline/lookup.");
+            if (isTags && (hasInline || hasLookup))
+                errors.Add($"Field '{f.Name}': tags controls take only an optional options.searchKey.");
+            if (!isOptionControl && !isSearchControl && !isTags && (hasInline || hasLookup || hasSearch))
                 errors.Add($"Field '{f.Name}': controlType '{f.ControlType}' does not take options.");
             if (hasLookup && !existingLookupKeys.Contains(f.Options!.LookupKey!))
                 errors.Add($"Field '{f.Name}': lookupKey '{f.Options!.LookupKey}' does not exist.");
+            if (hasSearch && !SearchSources.Keys.Contains(f.Options!.SearchKey!))
+                errors.Add($"Field '{f.Name}': searchKey '{f.Options!.SearchKey}' is not a registered search source.");
             if (f.MustBeTrue && f.ControlType != "checkbox")
                 errors.Add($"Field '{f.Name}': mustBeTrue is only valid on checkbox controls.");
             if (f.Pattern != null)

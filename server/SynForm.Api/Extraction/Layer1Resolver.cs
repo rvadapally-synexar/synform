@@ -135,6 +135,11 @@ public sealed class Layer1Resolver
         remainder = remainder.Trim();
         if (remainder == "") return false;
 
+        // High-cardinality search fields can't be resolved deterministically (9M physicians,
+        // a formulary) — Layer 1 declines so the LLM extracts the spoken value and the server
+        // resolve pass maps it to the registry. "Search-and-confirm", not "enumerate-and-match".
+        if (f.Options?.SearchKey != null) return false;
+
         void Set(object? value, double confidence)
         {
             result.Values[f.Name] = JsonSerializer.SerializeToElement(value);

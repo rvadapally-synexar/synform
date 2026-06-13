@@ -17,6 +17,12 @@ public static class SchemaGenerator
             var prop = FieldSchema(f, lookups);
             var descriptions = new List<string>();
             if (f.Unit != null) descriptions.Add($"Unit: {f.Unit}.");
+            if (f.Options?.SearchKey is { } sk)
+                descriptions.Add(f.ControlType == "search"
+                    ? $"Return the {f.Label} exactly as spoken (e.g. a person's name) as a plain string; the server resolves it against the {sk} registry — do not invent an id."
+                    : $"Return each value as a plain string as spoken; the server resolves against the {sk} source.");
+            if (f.ControlType == "tags")
+                descriptions.Add("Free-text list: return each item the clinician mentions as a separate string. Values are NOT restricted to a fixed set.");
             if (f.RequiredWhen != null) descriptions.Add("Conditionally required (see layout requiredWhen).");
             if (f.VisibleWhen != null) descriptions.Add("Conditionally visible; omit unless the condition holds.");
             if (f.ComputedFrom != null) descriptions.Add($"Derived ({f.ComputedFrom.Fn}); server computes — do not submit.");

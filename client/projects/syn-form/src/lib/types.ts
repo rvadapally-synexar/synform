@@ -2,7 +2,8 @@
 
 export type ControlType =
   | 'text' | 'textarea' | 'number' | 'dropdown' | 'multiselect' | 'radio'
-  | 'checkbox' | 'checkboxGroup' | 'date' | 'time' | 'bpPair';
+  | 'checkbox' | 'checkboxGroup' | 'date' | 'time' | 'bpPair'
+  | 'search' | 'searchMulti' | 'tags';
 
 export type DataType = 'string' | 'number' | 'boolean' | 'date' | 'time' | 'string[]' | 'bpPair';
 
@@ -26,7 +27,7 @@ export interface FieldDef {
   dataType: DataType;
   required?: boolean;
   mustBeTrue?: boolean;
-  options?: { inline?: OptionItem[]; lookupKey?: string };
+  options?: { inline?: OptionItem[]; lookupKey?: string; searchKey?: string; freeEntry?: boolean };
   group?: string;
   order?: number;
   unit?: string | null;

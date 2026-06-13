@@ -139,3 +139,42 @@ textarea.syn-input { resize: vertical; }
     &.sheet-cancel { background: #fee2e2; text-align: center; margin-top: 8px; }
   }
 }
+
+/* Autocomplete (search / searchMulti) + free tags. Hand-rolled to match the codebase
+   (no PrimeNG) and to avoid the synthetic-input typeahead trap. */
+.ac { position: relative; }
+.ac-input-row { display: flex; align-items: center; gap: 6px; }
+.ac-input-row .syn-input { flex: 1; }
+.ac-clear {
+  border: none; background: #f3f4f6; color: #6b7280; border-radius: 6px;
+  width: 28px; height: 28px; cursor: pointer; flex-shrink: 0;
+  &:hover { background: #fee2e2; color: #b91c1c; }
+}
+.ac-list {
+  position: absolute; z-index: 50; top: calc(100% + 2px); left: 0; right: 0;
+  margin: 0; padding: 4px; list-style: none;
+  background: #fff; border: 1px solid #d1d5db; border-radius: 8px;
+  max-height: 240px; overflow-y: auto; box-shadow: 0 8px 24px rgb(0 0 0 / .12);
+  li {
+    padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px;
+    &:hover { background: #eff6ff; }
+    &.ac-loading, &.ac-empty { color: #9ca3af; cursor: default; font-style: italic; }
+  }
+}
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #e0e7ff; color: #3730a3; border-radius: 14px;
+  padding: 3px 6px 3px 11px; font-size: 13px;
+  button {
+    border: none; background: rgb(55 48 163 / .15); color: #3730a3;
+    width: 18px; height: 18px; border-radius: 50%; cursor: pointer; line-height: 1;
+    font-size: 11px; display: grid; place-items: center;
+    &:hover { background: #c7d2fe; }
+  }
+}
+.coarse {
+  .ac-list li { padding: 12px 14px; font-size: 16px; }
+  .tag { font-size: 15px; padding: 5px 8px 5px 13px; }
+  .ac-clear { width: 40px; height: 40px; }
+}

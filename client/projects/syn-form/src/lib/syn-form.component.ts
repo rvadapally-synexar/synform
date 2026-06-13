@@ -8,7 +8,7 @@ import { Subscription } from 'rxjs';
 import { evaluateCondition, isEmpty, referencedFields } from './condition';
 import { COMPUTED_FNS } from './computed';
 import { SynFormDataService } from './data.service';
-import { SynFieldComponent } from './field.component';
+import { ResolveFn, SearchFn, SynFieldComponent } from './field.component';
 import { SynFormGroupDirective } from './group.directive';
 import { PointerModeService } from './pointer';
 import { uuid } from './uuid';
@@ -34,6 +34,8 @@ import {
           [field]="f"
           [control]="controlFor(f.name)"
           [options]="optionsFor(f.name)"
+          [search]="searchFor(f.name)"
+          [resolveLabel]="resolveLabelFor(f.name)"
           [coarse]="pointer.coarse()"
           [density]="density()"
           [highlight]="highlightFor(f.name)"
@@ -96,6 +98,10 @@ export class SynFormComponent implements AfterContentInit {
 
   private layoutDef = signal<LayoutDef | null>(null);
   private resolvedVersion = signal<number>(0);
+  // Stable per-field search/resolve closures (built once per layout) so passing them as
+  // inputs doesn't create a new function identity every change-detection pass.
+  private searchFns: Record<string, SearchFn | null> = {};
+  private resolveFns: Record<string, ResolveFn | null> = {};
   protected loadError = signal<string | null>(null);
   private values = signal<PartialValues>({});
   private lookups = signal<Record<string, OptionItem[]>>({});     // lookupKey → all active items
@@ -149,10 +155,26 @@ export class SynFormComponent implements AfterContentInit {
     this.loadError.set(null);
     this.resolvedVersion.set(version);
     await this.loadLookups(def);
+    this.buildSearchFns(def);
     this.buildForm(def);
     this.layoutDef.set(def);
     if (this.contentReady) this.renderGroups();
   }
+
+  /** Bind each search-backed field to its remote source once, so the closures are stable inputs. */
+  private buildSearchFns(def: LayoutDef): void {
+    this.searchFns = {};
+    this.resolveFns = {};
+    for (const f of def.fields) {
+      const key = f.options?.searchKey;
+      if (!key) continue;
+      this.searchFns[f.name] = (term: string) => this.data.searchSource(key, term);
+      if (f.controlType === 'search') this.resolveFns[f.name] = (id: string) => this.data.resolveSearch(key, id);
+    }
+  }
+
+  protected searchFor(name: string): SearchFn | null { return this.searchFns[name] ?? null; }
+  protected resolveLabelFor(name: string): ResolveFn | null { return this.resolveFns[name] ?? null; }
 
   private async loadLookups(def: LayoutDef): Promise<void> {
     const keys = [...new Set(def.fields.map(f => f.options?.lookupKey).filter((k): k is string => !!k))];
@@ -377,7 +399,16 @@ export class SynFormComponent implements AfterContentInit {
         }
 
         let value = incoming;
-        if (value != null && f.options) {
+        // Open-valued fields (remote search / free tags) carry values that aren't in any
+        // preloaded option list — the server already resolved/validated them, so skip the
+        // membership filter. Arrays still union with the current value.
+        const isOpen = f.controlType === 'search' || f.controlType === 'searchMulti' || f.controlType === 'tags';
+        if (value != null && isOpen) {
+          if (Array.isArray(value)) {
+            const current = Array.isArray(vals[name]) ? vals[name] as string[] : [];
+            value = [...new Set([...current, ...value as string[]])];
+          }
+        } else if (value != null && f.options) {
           const allowed = this.optionsFor(name).map(o => o.value);
           if (Array.isArray(value)) {
             const ok = value.filter(v => allowed.includes(v as string));

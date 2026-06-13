@@ -1,7 +1,15 @@
 import { CommonModule } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import {
+  ChangeDetectionStrategy, Component, OnDestroy, computed, effect, input, output, signal,
+} from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { Subscription } from 'rxjs';
 import { FieldDef, FieldHighlight, OptionItem } from './types';
+
+/** Function a host provides so a search field can query its remote source as the user types. */
+export type SearchFn = (term: string) => Promise<OptionItem[]>;
+/** Function a host provides so a single-search field can turn a stored id into a display label. */
+export type ResolveFn = (id: string) => Promise<OptionItem | null>;
 
 /**
  * Renders one field. Variant selection (desktop vs touch) is decided here from the
@@ -168,6 +176,82 @@ import { FieldDef, FieldHighlight, OptionItem } from './types';
             }
           </div>
         }
+        @case ('autocomplete') {
+          <!-- Single remote-search reference (e.g. physician/NPI). Stores the id; shows the label. -->
+          <div class="ac">
+            <div class="ac-input-row">
+              <input class="syn-input" [id]="id" type="text" autocomplete="off"
+                     [value]="query()" [disabled]="control().disabled"
+                     [placeholder]="'Search ' + field().label.toLowerCase() + '…'"
+                     (input)="onSearchInput($event)" (focus)="onSearchFocus()" (blur)="onSearchBlur()" />
+              @if (control().value != null) {
+                <button type="button" class="ac-clear" aria-label="Clear" (click)="clearSearch()">✕</button>
+              }
+            </div>
+            @if (acOpen() && (results().length || loadingResults())) {
+              <ul class="ac-list" role="listbox">
+                @if (loadingResults()) { <li class="ac-loading">Searching…</li> }
+                @for (r of results(); track r.value) {
+                  <li role="option" (mousedown)="pickResult(r)">{{ r.label }}</li>
+                }
+                @if (!loadingResults() && !results().length) { <li class="ac-empty">No matches</li> }
+              </ul>
+            }
+          </div>
+        }
+        @case ('autocompleteMulti') {
+          <!-- Multi remote-search reference (e.g. current medications). Stores a list of values. -->
+          <div class="ac">
+            @if (arrayValue().length) {
+              <div class="tag-row">
+                @for (t of arrayValue(); track t) {
+                  <span class="tag">{{ t }}<button type="button" aria-label="Remove" (click)="removeToken(t)">✕</button></span>
+                }
+              </div>
+            }
+            <div class="ac-input-row">
+              <input class="syn-input" [id]="id" type="text" autocomplete="off"
+                     [value]="query()" [disabled]="control().disabled"
+                     [placeholder]="'Add ' + field().label.toLowerCase() + '…'"
+                     (input)="onSearchInput($event)" (focus)="onSearchFocus()" (blur)="onSearchBlur()"
+                     (keydown)="onTokenKeydown($event)" />
+            </div>
+            @if (acOpen() && (results().length || loadingResults())) {
+              <ul class="ac-list" role="listbox">
+                @if (loadingResults()) { <li class="ac-loading">Searching…</li> }
+                @for (r of results(); track r.value) {
+                  <li role="option" (mousedown)="pickResult(r)">{{ r.label }}</li>
+                }
+              </ul>
+            }
+          </div>
+        }
+        @case ('tags') {
+          <!-- Free-text comma-separated list (e.g. comorbidities). Optional typeahead suggestions. -->
+          <div class="ac">
+            @if (arrayValue().length) {
+              <div class="tag-row">
+                @for (t of arrayValue(); track t) {
+                  <span class="tag">{{ t }}<button type="button" aria-label="Remove" (click)="removeToken(t)">✕</button></span>
+                }
+              </div>
+            }
+            <div class="ac-input-row">
+              <input class="syn-input" [id]="id" type="text" autocomplete="off"
+                     [value]="query()" [disabled]="control().disabled"
+                     placeholder="Type and press Enter or comma…"
+                     (input)="onSearchInput($event)" (focus)="onSearchFocus()" (blur)="onSearchBlur()"
+                     (keydown)="onTokenKeydown($event)" />
+            </div>
+            @if (acOpen() && results().length) {
+              <ul class="ac-list" role="listbox">
+                @for (r of results(); track r.value) {
+                  <li role="option" (mousedown)="pickResult(r)">{{ r.label }}</li>
+                }
+              </ul>
+            }
+          </div>
+        }
       }
 
       @for (e of errors(); track e) { <div class="syn-error" role="alert">{{ e }}</div> }
@@ -175,7 +259,7 @@ import { FieldDef, FieldHighlight, OptionItem } from './types';
   `,
   styleUrls: ['./field.component.scss'],
 })
-export class SynFieldComponent {
+export class SynFieldComponent implements OnDestroy {
   field = input.required<FieldDef>();
   control = input.required<FormControl>();
   options = input<OptionItem[]>([]);
@@ -183,10 +267,44 @@ export class SynFieldComponent {
   density = input<'comfortable' | 'compact'>('comfortable');
   highlight = input<FieldHighlight>(null);
   errors = input<string[]>([]);
+  /** Provided by the host for search/searchMulti/tags fields — queries the remote source. */
+  search = input<SearchFn | null>(null);
+  /** Provided by the host for single-search fields — resolves a stored id to a display label. */
+  resolveLabel = input<ResolveFn | null>(null);
   interacted = output<void>();
 
   sheetOpen = false;
   readonly id = `syn-${Math.random().toString(36).slice(2, 9)}`;
+
+  // Autocomplete / tags local state.
+  protected query = signal('');
+  protected results = signal<OptionItem[]>([]);
+  protected acOpen = signal(false);
+  protected loadingResults = signal(false);
+  private labelCache = new Map<string, string>();
+  private debounceId: ReturnType<typeof setTimeout> | null = null;
+  private searchSeq = 0;
+  private valueSub?: Subscription;
+
+  constructor() {
+    // Keep the single-search text box showing the label for whatever value is set —
+    // including values set externally by voice/photo populate or a loaded record.
+    // allowSignalWrites: this effect deliberately bridges a non-signal FormControl value
+    // into the `query` signal, so it must be permitted to write during reaction.
+    effect(() => {
+      const ctrl = this.control();
+      this.valueSub?.unsubscribe();
+      if (this.field().controlType === 'search') {
+        this.syncSearchLabel(ctrl.value);
+        this.valueSub = ctrl.valueChanges.subscribe(v => this.syncSearchLabel(v));
+      }
+    }, { allowSignalWrites: true });
+  }
+
+  ngOnDestroy(): void {
+    this.valueSub?.unsubscribe();
+    if (this.debounceId) clearTimeout(this.debounceId);
+  }
 
   /** Variant table from spec §4.1, decided by pointer + option count. */
   variant = computed<string>(() => {
@@ -205,6 +323,9 @@ export class SynFieldComponent {
       case 'date': return 'date';
       case 'time': return 'time';
       case 'bpPair': return 'bp';
+      case 'search': return 'autocomplete';
+      case 'searchMulti': return 'autocompleteMulti';
+      case 'tags': return 'tags';
       default: return 'text';
     }
   });
@@ -233,6 +354,94 @@ export class SynFieldComponent {
     this.control().setValue(v);
     this.control().markAsDirty();
     this.interacted.emit();
+  }
+
+  // ---------- autocomplete / tags ----------
+
+  /** Array-valued control accessor for searchMulti/tags chips. */
+  arrayValue(): string[] {
+    const v = this.control().value;
+    return Array.isArray(v) ? v as string[] : [];
+  }
+
+  private syncSearchLabel(value: unknown): void {
+    if (value == null || typeof value !== 'string') { this.query.set(''); return; }
+    if (this.labelCache.has(value)) { this.query.set(this.labelCache.get(value)!); return; }
+    // Unknown id (cold load / voice): ask the host to resolve a display label.
+    this.query.set(value);
+    const resolve = this.resolveLabel();
+    if (resolve) resolve(value).then(hit => {
+      if (hit) {
+        this.labelCache.set(hit.value, hit.label);
+        if (this.control().value === value) this.query.set(hit.label);
+      }
+    });
+  }
+
+  onSearchInput(event: Event): void {
+    const term = (event.target as HTMLInputElement).value;
+    this.query.set(term);
+    // Single-search: typing without picking means no selection yet — clear the stored id.
+    if (this.field().controlType === 'search' && this.control().value != null) this.setValue(null);
+    if (this.debounceId) clearTimeout(this.debounceId);
+    if (term.trim().length < 2) { this.results.set([]); this.acOpen.set(true); return; }
+    const fn = this.search();
+    if (!fn) return;
+    this.acOpen.set(true);
+    this.loadingResults.set(true);
+    const seq = ++this.searchSeq;
+    this.debounceId = setTimeout(async () => {
+      try {
+        const hits = await fn(term.trim());
+        if (seq === this.searchSeq) this.results.set(hits);
+      } finally {
+        if (seq === this.searchSeq) this.loadingResults.set(false);
+      }
+    }, 220);
+  }
+
+  onSearchFocus(): void { if (this.results().length) this.acOpen.set(true); }
+  // Delay so a result's mousedown registers before the list is torn down.
+  onSearchBlur(): void { setTimeout(() => this.acOpen.set(false), 150); }
+
+  pickResult(r: OptionItem): void {
+    this.labelCache.set(r.value, r.label);
+    if (this.field().controlType === 'search') {
+      this.setValue(r.value);
+      this.query.set(r.label);
+    } else {
+      this.addToken(r.value);
+      this.query.set('');
+    }
+    this.results.set([]);
+    this.acOpen.set(false);
+  }
+
+  clearSearch(): void {
+    this.setValue(null);
+    this.query.set('');
+    this.results.set([]);
+  }
+
+  onTokenKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      const token = this.query().replace(/,$/, '').trim();
+      if (token) { this.addToken(token); this.query.set(''); this.results.set([]); this.acOpen.set(false); }
+    } else if (event.key === 'Backspace' && this.query() === '' && this.arrayValue().length) {
+      this.removeToken(this.arrayValue()[this.arrayValue().length - 1]);
+    }
+  }
+
+  private addToken(value: string): void {
+    const current = this.arrayValue();
+    if (current.some(t => t.toLowerCase() === value.toLowerCase())) return;
+    this.setValue([...current, value]);
+  }
+
+  removeToken(value: string): void {
+    const next = this.arrayValue().filter(t => t !== value);
+    this.setValue(next.length ? next : null);
   }
 
   isSelected(value: string): boolean {
