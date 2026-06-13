@@ -12,3 +12,5 @@ appsettings.local.json
 # "data/" — Windows git matches ignores case-insensitively and would swallow Data/*.cs)
 server/SynForm.Api/data/stt-compare/
 server/SynForm.Api/wwwroot/test-dictation.wav
+# Advisor reference media (large videos / PHI-adjacent screenshots) — keep out of git.
+docs/anesthesia/
